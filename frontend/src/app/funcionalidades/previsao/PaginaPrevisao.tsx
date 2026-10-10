@@ -18,7 +18,7 @@ export default function PaginaPrevisao() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-2xl font-bold sm:text-3xl">Previsão</h1>
+        <h1 className="text-2xl font-semibold">Previsão</h1>
         <p className="mt-1 text-tinta-suave">Risco previsto para as próximas 1 a 3 horas em cada tanque.</p>
       </header>
 

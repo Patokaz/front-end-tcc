@@ -51,7 +51,7 @@ export function LinhaMetrica({ icone: Icone, rotulo, valor, complemento, atenuad
         <p className="text-sm text-tinta-suave">{rotulo}</p>
         {complemento && <p className="text-xs text-tinta-suave">{complemento}</p>}
       </div>
-      <p className={cn('text-sm font-semibold tabular-nums', atenuado && 'text-tinta-suave')}>{valor}</p>
+      <p className={cn('shrink-0 text-sm font-semibold whitespace-nowrap tabular-nums', atenuado && 'text-tinta-suave')}>{valor}</p>
     </div>
   )
 }
@@ -70,7 +70,7 @@ export function ItemEvento({ cor, momento, titulo, descricao }: PropsItemEvento)
       <span aria-hidden className={cn('mt-1.5 size-2.5 shrink-0 rounded-full', cor)} />
       <span className="w-16 shrink-0 pt-px text-xs text-tinta-suave tabular-nums">{momento}</span>
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium">{titulo}</p>
+        <p className="text-sm font-semibold">{titulo}</p>
         {descricao && <p className="text-xs text-tinta-suave">{descricao}</p>}
       </div>
     </li>
@@ -111,7 +111,7 @@ export function InfoPopover({ rotulo, children, className }: PropsInfo) {
         aria-expanded={aberto}
         aria-controls={id}
         onClick={() => setAberto((a) => !a)}
-        className="-m-2 flex size-9 items-center justify-center rounded-full text-tinta-suave hover:text-primaria"
+        className="-m-2 flex size-9 shrink-0 items-center justify-center rounded-full text-tinta-suave hover:text-primaria pointer-coarse:size-11"
       >
         <Info aria-hidden className="size-4" />
       </button>
@@ -130,8 +130,9 @@ export function InfoPopover({ rotulo, children, className }: PropsInfo) {
 
 /** Ilustração do Figma (água com peixes), tingida conforme o risco. Puramente decorativa. */
 export function IlustracaoTanque({ critico, className }: { critico?: boolean; className?: string }) {
-  const agua = critico ? '#f3d0d4' : '#c9d7e6'
-  const peixe = critico ? '#d24a5a' : '#6b809b'
+  // tokens do index.css: a ilustração acompanha o tema claro/escuro
+  const agua = critico ? 'var(--color-ilustracao-agua-critica)' : 'var(--color-ilustracao-agua)'
+  const peixe = critico ? 'var(--color-ilustracao-peixe-critico)' : 'var(--color-ilustracao-peixe)'
   const peixes = [
     [40, 34],
     [92, 26],
@@ -142,7 +143,7 @@ export function IlustracaoTanque({ critico, className }: { critico?: boolean; cl
   return (
     <svg aria-hidden viewBox="0 0 200 64" preserveAspectRatio="none" className={cn('h-16 w-full rounded-lg', className)}>
       <rect width="200" height="64" rx="8" fill={agua} />
-      <path d="M0 10 Q 12.5 4 25 10 T 50 10 T 75 10 T 100 10 T 125 10 T 150 10 T 175 10 T 200 10" fill="none" stroke="#fff" strokeWidth="2" />
+      <path d="M0 10 Q 12.5 4 25 10 T 50 10 T 75 10 T 100 10 T 125 10 T 150 10 T 175 10 T 200 10" fill="none" stroke="var(--color-ilustracao-onda)" strokeWidth="2" />
       {peixes.map(([x, y]) => (
         <g key={`${x}-${y}`} transform={`translate(${x} ${y})`} fill="none" stroke={peixe} strokeWidth="1.4">
           <ellipse cx="0" cy="0" rx="8" ry="4" />

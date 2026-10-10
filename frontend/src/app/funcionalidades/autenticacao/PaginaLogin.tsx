@@ -49,7 +49,7 @@ export default function PaginaLogin() {
           <span className="flex size-16 items-center justify-center rounded-full bg-primaria shadow-lg">
             <Waves aria-hidden className="size-8" />
           </span>
-          <h1 className="mt-4 text-2xl font-bold">Painel Aquícola</h1>
+          <h1 className="mt-4 text-2xl font-semibold">Painel Aquícola</h1>
           <p className="mt-1 text-sm text-white/80">Monitoramento inteligente da água</p>
         </div>
 

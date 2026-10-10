@@ -41,7 +41,7 @@ export default function PaginaRelatorios() {
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-4 print:hidden">
         <div>
-          <h1 className="text-2xl font-bold sm:text-3xl">Relatórios</h1>
+          <h1 className="text-2xl font-semibold">Relatórios</h1>
           <p className="mt-1 text-tinta-suave">Escolha o tanque e o período. Para gerar o PDF, use “Salvar como PDF” na impressão.</p>
         </div>
         <Botao icone={Printer} onClick={() => window.print()} disabled={!leituras.data}>
@@ -53,7 +53,7 @@ export default function PaginaRelatorios() {
       <article className="space-y-6 rounded-xl border border-borda bg-superficie p-4 sm:p-6 print:border-0 print:p-0">
         <header className="border-b border-borda pb-4">
           <p className="text-sm font-semibold text-primaria">Painel Aquícola · Relatório de qualidade da água</p>
-          <h2 className="mt-1 flex flex-wrap items-center gap-2 text-xl font-bold">
+          <h2 className="mt-1 flex flex-wrap items-center gap-2 text-xl font-semibold">
             {tanque.nome} <SeloRisco nivel={tanque.nivel_risco} />
           </h2>
           <dl className="mt-3 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
@@ -105,7 +105,7 @@ export default function PaginaRelatorios() {
                       const faixa = faixaIdealDe(g, tanque.especie)
                       return (
                         <tr key={g}>
-                          <th scope="row" className="py-2 font-medium">{rotulo(g)}</th>
+                          <th scope="row" className="py-2 font-semibold">{rotulo(g)}</th>
                           <td className="py-2 text-right">{resumo ? formatarValor(g, resumo.minimo) : '—'}</td>
                           <td className="py-2 text-right">{resumo ? formatarValor(g, resumo.media) : '—'}</td>
                           <td className="py-2 text-right">{resumo ? formatarValor(g, resumo.maximo) : '—'}</td>

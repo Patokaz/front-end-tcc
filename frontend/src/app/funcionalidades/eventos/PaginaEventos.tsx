@@ -31,7 +31,7 @@ export default function PaginaEventos() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-2xl font-bold sm:text-3xl">Eventos</h1>
+        <h1 className="text-2xl font-semibold">Eventos</h1>
         <p className="mt-1 text-tinta-suave">Alertas emitidos e acionamentos do aerador em todos os tanques.</p>
       </header>
       <Cartao>

@@ -55,7 +55,11 @@ Em produção, sirva o `dist/` e a API no mesmo domínio por um proxy reverso (N
 
 ## Tecnologias
 
-React 18 · Vite · TypeScript (strict) · TailwindCSS 4 · React Router 7 · TanStack Query 5 · React Hook Form + Zod · Recharts · lucide-react · MSW (dados simulados e testes) · Vitest + Testing Library.
+React 18 · Vite · TypeScript (strict) · TailwindCSS 4 · React Router 7 · TanStack Query 5 · React Hook Form + Zod · Recharts · lucide-react · Public Sans (servida localmente) · MSW (dados simulados e testes) · Vitest + Testing Library.
+
+### Sistema visual
+
+Paleta, tipografia e movimento seguem o TC2 §8; a estrutura e a hierarquia das telas seguem o Figma. Os tokens ficam todos em `src/index.css`, incluindo os do tema escuro. Decisões, desvios declarados e as referências visuais consultadas estão em [`../docs/AUDITORIA_FRONTEND.md`](../docs/AUDITORIA_FRONTEND.md) §15.
 
 ## Estrutura (camadas do Figma "Decisões de UX")
 
@@ -83,9 +87,10 @@ Regras que orientam o código:
 ## Acessibilidade e responsividade
 
 - Layouts de 320 px a 1920 px. No computador, barra lateral; no celular e tablet, barra inferior, como no Figma.
-- Alvos de toque de 44 px no mínimo; foco visível; link "Pular para o conteúdo".
+- Alvos de toque de 44 px no mínimo em telas de toque (`pointer-coarse:`); foco visível; link "Pular para o conteúdo".
+- Contraste de texto ≥ 4,5:1 e bordas de campo ≥ 3:1, nos temas claro e escuro.
 - Rótulos ligados aos campos, erros anunciados por leitor de tela, `prefers-reduced-motion` respeitado.
-- Preferências "Modo avançado" e "Linguagem simples" em Configurações.
+- Preferências "Tema" (Automático, Claro, Escuro), "Modo avançado" e "Linguagem simples" em Configurações. A impressão sai sempre no tema claro.
 
 ## Limitações conhecidas
 

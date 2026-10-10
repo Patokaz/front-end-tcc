@@ -35,7 +35,7 @@ export function LinkSeta({ para, children, className }: { para: string; children
     <Link
       to={para}
       className={cn(
-        'inline-flex min-h-9 items-center gap-1 rounded text-sm font-medium text-primaria hover:text-primaria-escura hover:underline',
+        'inline-flex min-h-9 items-center gap-1 rounded text-sm font-semibold text-primaria hover:text-primaria-escura hover:underline pointer-coarse:min-h-11',
         className,
       )}
     >

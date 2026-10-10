@@ -149,7 +149,7 @@ export function ItemAlerta({ alerta, agora }: { alerta: Alerta; agora: number })
           className={cn('mt-1.5 size-2.5 shrink-0 rounded-full', alerta.nivel_risco ? COR_PONTO[alerta.nivel_risco] : 'bg-neutro')}
         />
         <div className="min-w-0">
-          <p className="text-sm font-medium">
+          <p className="text-sm font-semibold">
             {alerta.nivel_risco === 'critico' ? 'Alerta crítico' : 'Atenção'} — {alerta.tanque_nome}
           </p>
           <p className="text-sm text-tinta-suave">{alerta.mensagem}</p>

@@ -121,13 +121,13 @@ export default function GraficoSerie({
           data={dados}
           margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
         >
-          <CartesianGrid stroke="#e2e8f0" vertical={false} />
+          <CartesianGrid stroke="var(--color-borda)" vertical={false} />
           {faixaIdeal && (
             <ReferenceArea
               y1={faixaIdeal.min}
               // sem limite superior (OD), a faixa vai até o topo do gráfico
               y2={faixaIdeal.max ?? maximo + margem}
-              fill="#15803d"
+              fill="var(--color-otimo)"
               fillOpacity={0.08}
               stroke="none"
             />
@@ -138,15 +138,15 @@ export default function GraficoSerie({
             scale="time"
             domain={[inicio, fimEixo]}
             tickFormatter={(t: number) => formatarTempo(t)}
-            tick={{ fontSize: 12, fill: '#526072' }}
+            tick={{ fontSize: 12, fill: 'var(--color-tinta-suave)' }}
             tickLine={false}
-            axisLine={{ stroke: '#cbd5e1' }}
+            axisLine={{ stroke: 'var(--color-borda-forte)' }}
             minTickGap={24}
           />
           <YAxis
             domain={[minimo - margem, maximo + margem]}
             tickFormatter={(v: number) => formatarNumero(v, casas)}
-            tick={{ fontSize: 12, fill: '#526072' }}
+            tick={{ fontSize: 12, fill: 'var(--color-tinta-suave)' }}
             tickLine={false}
             axisLine={false}
             width={44}
@@ -154,6 +154,15 @@ export default function GraficoSerie({
           />
           <Tooltip
             isAnimationActive={false}
+            // o padrão do Recharts é fundo branco fixo: com os tokens, o balão acompanha o tema
+            contentStyle={{
+              backgroundColor: 'var(--color-superficie)',
+              border: '1px solid var(--color-borda)',
+              borderRadius: 8,
+              color: 'var(--color-tinta)',
+            }}
+            labelStyle={{ color: 'var(--color-tinta)', fontWeight: 600 }}
+            cursor={{ stroke: 'var(--color-borda-forte)' }}
             labelFormatter={(t) => formatarDataHora(Number(t))}
             formatter={(valor, nome) => [
               formatarValor(grandeza, Number(valor)),
@@ -161,7 +170,7 @@ export default function GraficoSerie({
             ]}
           />
           {previsao.length > 0 && ultimoReal && (
-            <ReferenceLine x={ultimoReal.ts} stroke="#94a3b8" strokeDasharray="4 4" />
+            <ReferenceLine x={ultimoReal.ts} stroke="var(--color-neutro)" strokeDasharray="4 4" />
           )}
           <Line
             dataKey="real"

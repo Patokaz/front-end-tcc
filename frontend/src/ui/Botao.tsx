@@ -7,8 +7,8 @@ type Variante = 'primario' | 'perigo' | 'escuro' | 'secundario' | 'fantasma'
 type Tamanho = 'md' | 'sm'
 
 const VARIANTES: Record<Variante, string> = {
-  primario: 'bg-primaria text-white hover:bg-primaria-escura',
-  perigo: 'bg-critico text-white hover:bg-critico-escuro',
+  primario: 'bg-primaria-solida text-white hover:bg-primaria-solida-hover',
+  perigo: 'bg-critico-solido text-white hover:bg-critico-escuro',
   escuro: 'bg-marinho text-white hover:bg-marinho-escuro',
   secundario: 'border border-borda-forte bg-superficie text-tinta hover:bg-neutro-fundo',
   fantasma: 'text-primaria hover:bg-primaria-fundo',
@@ -16,7 +16,8 @@ const VARIANTES: Record<Variante, string> = {
 
 const TAMANHOS: Record<Tamanho, string> = {
   md: 'min-h-11 px-4 text-sm',
-  sm: 'min-h-9 px-3 text-sm',
+  // compacto no mouse; no toque mantém os 44 px mínimos do TC2 (§8.4)
+  sm: 'min-h-9 px-3 text-sm pointer-coarse:min-h-11',
 }
 
 interface OpcoesVisuais {

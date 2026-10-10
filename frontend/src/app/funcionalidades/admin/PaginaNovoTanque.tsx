@@ -66,12 +66,12 @@ export default function PaginaNovoTanque() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
-      <Link to="/tanques" className="inline-flex min-h-9 items-center gap-1 text-sm font-medium text-primaria hover:underline">
+      <Link to="/tanques" className="inline-flex min-h-9 items-center gap-1 text-sm font-semibold text-primaria pointer-coarse:min-h-11 hover:underline">
         <ArrowLeft aria-hidden className="size-4" />
         Tanques
       </Link>
       <header>
-        <h1 className="text-2xl font-bold sm:text-3xl">Novo tanque</h1>
+        <h1 className="text-2xl font-semibold">Novo tanque</h1>
         <p className="mt-1 text-tinta-suave">Cadastre o tanque e associe o nó sensor (ESP32) pelo endereço MAC.</p>
       </header>
 

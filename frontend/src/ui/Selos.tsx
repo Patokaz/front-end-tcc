@@ -9,7 +9,7 @@ export type Tom = 'otimo' | 'atencao' | 'critico' | 'neutro' | 'info'
 const TONS: Record<Tom, string> = {
   otimo: 'bg-otimo-fundo text-otimo',
   atencao: 'bg-atencao-fundo text-atencao',
-  critico: 'bg-critico text-white',
+  critico: 'bg-critico-solido text-white',
   neutro: 'bg-neutro-fundo text-tinta-suave',
   info: 'bg-primaria-fundo text-primaria-escura',
 }

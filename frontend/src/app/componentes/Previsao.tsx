@@ -22,9 +22,11 @@ interface PropsVeredito {
   previsao: PrevisaoAtual | undefined
   tanque: Tanque
   carregando?: boolean
+  /** Tela de um tanque só: veredito maior. Em listas (vários tanques) fica em 20 px. */
+  destaque?: boolean
 }
 
-export function CartaoVeredito({ previsao, tanque, carregando }: PropsVeredito) {
+export function CartaoVeredito({ previsao, tanque, carregando, destaque }: PropsVeredito) {
   const rotulo = useRotuloGrandeza()
   const { modoAvancado } = usePreferencias()
   const agora = useAgora()
@@ -39,7 +41,8 @@ export function CartaoVeredito({ previsao, tanque, carregando }: PropsVeredito) 
     >
       <Icone aria-hidden className={cn('mt-0.5 size-6 shrink-0', cor)} />
       <div className="min-w-0">
-        <p className={cn('font-semibold', cor)}>{veredito.titulo}</p>
+        {/* TC2 §8.2: veredito em peso 800 (40 px no TC2; 28/20 px aqui, porque o veredito é uma frase e não cabe em 40 px no celular) */}
+        <p className={cn('font-extrabold', destaque ? 'text-2xl' : 'text-lg', cor)}>{veredito.titulo}</p>
         <p className="text-sm text-tinta-suave">{veredito.detalhe}</p>
         <div className="mt-2 flex flex-wrap gap-2 empty:hidden">
           {veredito.baixaConfianca && <Etiqueta tom="neutro">Confiança baixa</Etiqueta>}
@@ -68,7 +71,7 @@ export function PrevisaoPorHorizonte({ previsao }: { previsao: PrevisaoAtual | u
         {od && (
           <li className="flex flex-wrap items-center justify-between gap-2 py-2">
             <div>
-              <p className="text-sm font-medium">Agora</p>
+              <p className="text-sm font-semibold">Agora</p>
               <p className="text-xs text-tinta-suave">
                 {rotulo('od')}: {formatarValor('od', od.valor)}
                 {modoAvancado && od.confianca !== null && ` · confiança ${percentual(od.confianca)}`}
@@ -83,7 +86,7 @@ export function PrevisaoPorHorizonte({ previsao }: { previsao: PrevisaoAtual | u
         {horizontes.map((h) => (
           <li key={h.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
             <div>
-              <p className="text-sm font-medium">Em {h.horizonte_h === 1 ? '1 hora' : `${h.horizonte_h} horas`}</p>
+              <p className="text-sm font-semibold">Em {h.horizonte_h === 1 ? '1 hora' : `${h.horizonte_h} horas`}</p>
               <p className="text-xs text-tinta-suave">
                 {rotulo(h.parametro_critico)}: ≈ {formatarValor(h.parametro_critico, h.valor_previsto)}
                 {modoAvancado && h.confianca !== null && ` · probabilidade ${percentual(h.confianca)}`}

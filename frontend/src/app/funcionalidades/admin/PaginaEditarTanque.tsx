@@ -102,13 +102,13 @@ export default function PaginaEditarTanque() {
     <div className="mx-auto max-w-3xl space-y-6">
       <Link
         to={`/tanques/${idTanque}`}
-        className="inline-flex min-h-9 items-center gap-1 text-sm font-medium text-primaria hover:underline"
+        className="inline-flex min-h-9 items-center gap-1 text-sm font-semibold text-primaria pointer-coarse:min-h-11 hover:underline"
       >
         <ArrowLeft aria-hidden className="size-4" />
         {tanque.data?.nome ?? 'Tanque'}
       </Link>
       <header>
-        <h1 className="text-2xl font-bold sm:text-3xl">Editar tanque</h1>
+        <h1 className="text-2xl font-semibold">Editar tanque</h1>
         <p className="mt-1 text-tinta-suave">Atualize os dados do tanque, seus dispositivos e a situação dos sensores.</p>
       </header>
       {(tanque.isPending || tanque.isPlaceholderData || especies.isPending) && <Esqueleto className="h-96" />}

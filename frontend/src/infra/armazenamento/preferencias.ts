@@ -1,9 +1,14 @@
+/** Tema escuro opcional (TC2 §8): "automatico" segue a preferência do sistema. */
+export type Tema = 'automatico' | 'claro' | 'escuro'
+
 export interface Preferencias {
   /** Mostra faixas ideais, confiança da previsão e detalhes técnicos dos dispositivos. */
   modoAvancado: boolean
   /** Troca termos técnicos por explicações do dia a dia. */
   linguagemSimples: boolean
   explicacaoOdDispensada: boolean
+  /** Claro, escuro ou o do sistema (TC2 §8: o claro é o padrão de uso sob sol; o escuro é opcional). */
+  tema: Tema
 }
 
 const CHAVE = 'painel-aquicola:preferencias'
@@ -12,6 +17,7 @@ export const PREFERENCIAS_PADRAO: Preferencias = {
   modoAvancado: false,
   linguagemSimples: false,
   explicacaoOdDispensada: false,
+  tema: 'automatico',
 }
 
 // Preferência de interface por aparelho: o armazenamento pode falhar (aba anônima) sem quebrar a tela.

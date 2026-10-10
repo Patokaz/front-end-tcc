@@ -383,7 +383,7 @@ Decisão do usuário: desenvolver agora contra dados simulados e integrar com a 
 | F-08 | Login por e-mail; "Esqueceu a senha? Peça ao administrador"; "Lembrar de mim" = cookie persistente |
 | F-09 | `operador` exibido como "Produtor" |
 | F-10 | "Ativos" definidos pelo backend (`/alertas?ativos=true`); histórico separado |
-| F-11 / F-12 | Identidade visual e estrutura de pastas do Figma |
+| F-11 / F-12 | Identidade visual e estrutura de pastas do Figma (a identidade foi trocada pela do TC2 em 10/10; ver §15) |
 | F-13 | Gráfico com escala por grandeza: série selecionável no Início; um gráfico por grandeza no detalhe, no histórico e nos relatórios |
 | F-14 | Endpoint global `/alertas` com filtro por tanque |
 | F-15 | Preferências salvas no aparelho; glossário só com os textos do Figma (sem "Transparência", por causa da F-01) |
@@ -583,3 +583,66 @@ O status do sensor tem efeito no ML: só sensores `ativo` entram na previsão (`
 - **Segurança:** no broker público qualquer um que souber o tópico aciona o relé. Para uso real, broker privado com senha (a VPS do TC1).
 - **Sem confirmação do relé:** o painel mostra o último comando. Confirmar exige o nó publicar o estado e a ingestão gravá-lo.
 - **Acionamento automático** (TC1: OD < 3 mg/L): continua sem dono. Quando existir, deve gravar com `id_previsao` para aparecer como automático.
+
+## 15. Modernização de UX/UI (10/10/2026)
+
+Pedido do usuário: modernizar a interface com foco em experiência de uso e mobile-first, sem mudar funcionalidades, fluxos, regras ou contratos. A auditoria mediu as 11 telas em 320, 375, 768 e 1024 px antes de qualquer mudança.
+
+### 15.1 Decisões do usuário
+
+| Ponto | Decisão |
+|---|---|
+| Identidade visual (Figma × TC2, F-11) | **Paleta, fonte e escala do TC2 §8**, com a estrutura e a hierarquia das telas do Figma |
+| Tema escuro (TC2 §8: opcional, respeitando `prefers-color-scheme`) | Incluído em Ajustes: Automático (padrão), Claro, Escuro |
+| Repositório | `github.com/Patokaz/front-end-tcc`. Os `.docx` acadêmicos ficam fora do repositório (`.gitignore`) |
+
+### 15.2 Problemas medidos e soluções
+
+| Problema | Decisão | Onde |
+|---|---|---|
+| Alvos de toque de 36 px (filtros, chips, "Ver todos", paginação, selects, ⓘ do OD) e interruptor de 28 px; o TC2 §8.4 exige 44 × 44 px | Variante `pointer-coarse:` do Tailwind: 44 px em telas de toque, densidade mantida no mouse. No interruptor, um `::before` amplia a área de toque sem mudar o desenho | `ui/Botao`, `ui/Navegacao`, `ui/Campos`, `ui/Cartao`, `ui/Pecas`, links "voltar", selects |
+| Em 1024 px (barra lateral visível), a grade de 3 colunas do Início deixava cartões de ~220 px: nome "Tanque ...", rótulos em 3 linhas, ⓘ encostado no valor | 2 colunas até 1535 px, 3 só a partir de 1536 px; o valor da métrica não encolhe nem quebra | `PaginaInicio`, `ui/Pecas` (`LinhaMetrica`) |
+| Nome do tanque cortado com reticências em 320 px | O nome quebra linha; o selo de risco desce quando não cabe ao lado | `componentes/Tanque` (`CartaoTanque`) |
+| Itens do TC2 §8 ausentes: paleta, Public Sans, escala 12/14/16/20/28/40, pesos 400/600/800, tema escuro | Tokens centralizados em `src/index.css`; títulos de página em 28 px/600; 800 só em valores e veredito | Global |
+
+### 15.3 Sistema visual
+
+- **Paleta (TC2 §8.1):** `agua #2F6F73`, `superficie #F5F7F6`, `tinta #132B2C`, `ótimo #1F7A55`, `crítico #A83426`. Tokens derivados com contraste conferido por cálculo.
+- **Desvio declarado:** o âmbar de "atenção" do TC2 (`#B87503`) tem **3,76:1** sobre branco, abaixo dos 4,5:1 que o próprio TC2 exige. O texto de atenção usa `#8F5A00` (5,78:1), do mesmo matiz.
+- **Bordas de campo:** passaram a ter 3:1 (WCAG 1.4.11): `#7F918F` no claro e `#617779` no escuro.
+- **Tipografia (TC2 §8.2):**
+  - Public Sans variável, servida localmente (`@fontsource-variable/public-sans`, OFL), no lugar da Inter.
+  - Títulos de página em 28 px/600. Contagens dos indicadores em 28 px no celular e 40 px no computador, peso 800.
+  - Veredito da previsão em 800, com 28 px no detalhe do tanque e 20 px na lista de previsões. O TC2 pede 40 px, mas o veredito é uma frase e não cabe em 40 px no celular.
+  - Os valores de "Parâmetros agora" seguem a lista do Figma, sem os 40 px.
+- **Tema escuro:**
+  - Os mesmos tokens são redefinidos em `:root[data-tema='escuro']`. Gráficos, séries, ilustração e balão do gráfico usam variáveis CSS e acompanham o tema.
+  - A impressão do relatório volta sempre ao claro.
+  - A preferência fica no aparelho, como as demais.
+- **Movimento (TC2 §8.3):** só a troca de tema ganhou animação, uma mudança de estado pedida pelo usuário: o círculo do Skiper UI 26, feito com a View Transition API nativa em 400 ms. Com "reduzir movimento", ou sem suporte no navegador, a troca é imediata.
+
+### 15.4 Referências visuais consultadas
+
+Base de consulta indicada pelo usuário. São inspiração, não especificação: valem as regras do TC2 e do Figma.
+
+| Referência | Uso no projeto |
+|---|---|
+| [Aceternity UI](https://ui.aceternity.com/) · [Components](https://ui.aceternity.com/components) | Consultada; nenhum componente adotado. A maioria é decorativa (shaders, fundos animados, parallax, 3D) e depende da biblioteca Motion |
+| [Magic UI](https://magicui.design/) · [Pointer](https://magicui.design/docs/components/pointer) | Não adotado: cursor personalizado é decorativo e não existe em telas de toque |
+| [21st.dev](https://21st.dev/) | Registro de componentes shadcn; nenhum adotado. O projeto já tem seus componentes base |
+| [Lightswind](https://lightswind.com/) · [3D Carousel](https://lightswind.com/components/3d-carousel) | Não adotado: não há conteúdo em carrossel no painel, e o 3D contraria o TC2 §8.3 |
+| [Skiper UI 26](https://skiper-ui.com/v1/skiper26) | **Adotada a ideia**: troca de tema com círculo a partir do botão. Implementada sem `framer-motion` e sem `next-themes` |
+
+**Nenhuma dependência nova de interface.** A única troca foi a fonte (Inter → Public Sans), decidida pelo usuário.
+
+### 15.5 Verificação
+
+- **Medição automática nas 11 telas e 7 larguras** (320, 375, 390, 430, 768, 1024, 1440 px): sem rolagem horizontal e sem texto cortado. Nas larguras de celular, com toque emulado, nenhum alvo abaixo de 44 px.
+- **Limites da verificação:** em 768 e 1024 px o navegador de teste emula mouse, então a regra de toque não foi medida nessas larguras. Tudo foi feito com viewport simulado, não em aparelho real.
+- **Telas conferidas:** claro e escuro, cores dos gráficos resolvidas pelo tema, troca de tema em Ajustes, navegação por teclado com foco visível.
+- **Checagens:** `tsc`, ESLint, 29 testes e build de produção sem erros. JS inicial com 62 KB comprimidos, dentro do orçamento de 200 KB do TC2.
+
+### 15.6 Pendências
+
+- Conferir as cores em aparelhos reais, sob sol e no escuro.
+- Os 40 px do TC2 para valores de leitura foram adaptados (ver 15.3). Se a banca exigir literalmente, dá para aplicar no detalhe do tanque.

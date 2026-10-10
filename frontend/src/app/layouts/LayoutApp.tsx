@@ -17,11 +17,11 @@ const DADOS_SIMULADOS = import.meta.env.VITE_USAR_MOCKS === 'true'
 function Marca({ claro }: { claro?: boolean }) {
   return (
     <Link to="/" className="flex items-center gap-3 rounded-lg">
-      <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-marinho text-white">
+      <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primaria-solida text-white">
         <Waves aria-hidden className="size-5" />
       </span>
       <span className="leading-tight">
-        <span className={cn('block font-bold', claro ? 'text-white' : 'text-tinta')}>Painel Aquícola</span>
+        <span className={cn('block font-semibold', claro ? 'text-white' : 'text-tinta')}>Painel Aquícola</span>
         <span className={cn('block text-xs', claro ? 'text-white/75' : 'text-tinta-suave')}>Monitoramento Inteligente</span>
       </span>
     </Link>
@@ -35,7 +35,7 @@ function ContadorAlertas({ compacto }: { compacto?: boolean }) {
   return (
     <span
       className={cn(
-        'flex items-center justify-center rounded-full bg-critico font-bold text-white tabular-nums',
+        'flex items-center justify-center rounded-full bg-critico-solido font-semibold text-white tabular-nums',
         compacto ? 'absolute -top-1 left-1/2 ml-1.5 h-4 min-w-4 px-1 text-[10px]' : 'ml-auto h-5 min-w-5 px-1.5 text-xs',
       )}
     >
@@ -54,7 +54,7 @@ function ItemMenuLateral({ item, caminho }: { item: ItemNavegacao; caminho: stri
         to={item.para}
         aria-current={ativo ? 'page' : undefined}
         className={cn(
-          'flex min-h-11 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors',
+          'flex min-h-11 items-center gap-3 rounded-lg px-3 text-sm font-semibold transition-colors',
           ativo ? 'bg-menu-ativo text-white' : 'text-tinta hover:bg-neutro-fundo',
         )}
       >
@@ -196,7 +196,7 @@ export function LayoutApp() {
     <div className="min-h-dvh lg:flex">
       <a
         href="#conteudo"
-        className="sr-only z-50 rounded-lg bg-primaria px-4 py-2 text-white focus:not-sr-only focus:fixed focus:top-3 focus:left-3"
+        className="sr-only z-50 rounded-lg bg-primaria-solida px-4 py-2 text-white focus:not-sr-only focus:fixed focus:top-3 focus:left-3"
       >
         Pular para o conteúdo
       </a>
@@ -245,7 +245,7 @@ export function LayoutApp() {
                   to={item.para}
                   aria-current={ativo ? 'page' : undefined}
                   className={cn(
-                    'flex min-h-16 flex-col items-center justify-center gap-1 text-xs font-medium',
+                    'flex min-h-16 flex-col items-center justify-center gap-1 text-xs font-semibold',
                     ativo ? 'text-primaria' : 'text-tinta-suave',
                   )}
                 >

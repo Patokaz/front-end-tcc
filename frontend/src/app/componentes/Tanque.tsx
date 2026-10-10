@@ -37,7 +37,7 @@ interface PropsParametros {
 }
 
 function Aviso({ children }: { children: string }) {
-  return <span className="font-medium text-atencao">{children}</span>
+  return <span className="font-semibold text-atencao">{children}</span>
 }
 
 /** Valores mais recentes do tanque, na ordem do Figma. */
@@ -99,7 +99,7 @@ export function SituacaoDosDados({ tanque, agora, compacto, className }: PropsSi
         situacao.tipo === 'offline' && situacao.ultimaLeitura
           ? `Sem dados ${compacto ? '' : 'do sensor '}${tempoRelativo(situacao.ultimaLeitura, agora)}`
           : 'Dispositivo offline',
-      classe: 'font-medium text-atencao',
+      classe: 'font-semibold text-atencao',
     },
     aguardando: {
       icone: Hourglass,
@@ -125,10 +125,11 @@ export function SituacaoDosDados({ tanque, agora, compacto, className }: PropsSi
 export function CartaoTanque({ tanque, agora }: { tanque: Tanque; agora: number }) {
   return (
     <article className="relative flex flex-col rounded-xl border border-borda bg-superficie p-4 transition-shadow focus-within:ring-2 focus-within:ring-primaria hover:shadow-md">
-      <div className="flex items-start justify-between gap-2">
+      {/* o nome quebra linha em vez de virar "Tanque ..."; o selo desce quando não cabe ao lado */}
+      <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-1">
         <h3 className="flex min-w-0 items-center gap-2 font-semibold">
           <span aria-hidden className="size-3.5 shrink-0 rounded-sm bg-primaria" />
-          <Link to={`/tanques/${tanque.id}`} className="truncate after:absolute after:inset-0 focus:outline-none">
+          <Link to={`/tanques/${tanque.id}`} className="break-words after:absolute after:inset-0 focus:outline-none">
             {tanque.nome}
           </Link>
         </h3>
@@ -172,14 +173,14 @@ export function ItemTanque({ tanque, agora }: { tanque: Tanque; agora: number })
         <span
           aria-hidden
           className={cn(
-            'flex size-10 shrink-0 items-center justify-center rounded-full text-sm font-bold',
+            'flex size-10 shrink-0 items-center justify-center rounded-full text-sm font-semibold',
             COR_AVATAR[tanque.nivel_risco ?? 'nulo'],
           )}
         >
           {tanque.nome.replace(/^Tanque\s+/i, '').charAt(0).toUpperCase()}
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block font-medium break-words">{tanque.nome}</span>
+          <span className="block font-semibold break-words">{tanque.nome}</span>
           <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
             <SeloRisco nivel={tanque.nivel_risco} />
             <SituacaoDosDados tanque={tanque} agora={agora} compacto />

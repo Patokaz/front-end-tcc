@@ -45,7 +45,7 @@ export default function PaginaHistorico() {
 
   const cabecalho = (
     <header>
-      <h1 className="text-2xl font-bold sm:text-3xl">Histórico</h1>
+      <h1 className="text-2xl font-semibold">Histórico</h1>
       <p className="mt-1 text-tinta-suave">Leituras de pH, temperatura, turbidez e oxigênio estimado ao longo do tempo.</p>
     </header>
   )

@@ -37,7 +37,7 @@ export default function PaginaAlertas() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-2xl font-bold sm:text-3xl">Alertas e recomendações</h1>
+        <h1 className="text-2xl font-semibold">Alertas e recomendações</h1>
         <p className="mt-1 text-tinta-suave">O que precisa de ação agora e o histórico de alertas enviados.</p>
       </header>
 

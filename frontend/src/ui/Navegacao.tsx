@@ -1,3 +1,4 @@
+import type React from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@/compartilhado/cn'
 import { Botao } from './Botao'
@@ -48,7 +49,7 @@ interface PropsSeletor<T extends string> {
   rotulo: string
   opcoes: Opcao<T>[]
   valor: T
-  aoMudar: (valor: T) => void
+  aoMudar: (valor: T, evento: React.MouseEvent<HTMLButtonElement>) => void
   className?: string
 }
 
@@ -67,9 +68,9 @@ export function SeletorSegmentado<T extends string>({ rotulo, opcoes, valor, aoM
             key={opcao.valor}
             type="button"
             aria-pressed={ativo}
-            onClick={() => aoMudar(opcao.valor)}
+            onClick={(evento) => aoMudar(opcao.valor, evento)}
             className={cn(
-              'min-h-9 rounded-md px-3 text-sm font-medium whitespace-nowrap transition-colors',
+              'min-h-9 rounded-md px-3 text-sm font-semibold whitespace-nowrap transition-colors pointer-coarse:min-h-11',
               ativo ? 'bg-superficie text-tinta shadow-sm' : 'text-tinta-suave hover:text-tinta',
             )}
           >

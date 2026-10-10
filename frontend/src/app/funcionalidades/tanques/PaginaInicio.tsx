@@ -67,7 +67,7 @@ export default function PaginaInicio() {
   const lista = ordenarPorUrgencia(tanques.data)
   const cabecalho = (
     <header>
-      <h1 className="text-2xl font-bold sm:text-3xl">
+      <h1 className="text-2xl font-semibold">
         {saudacao()}, {primeiroNome(usuario.nome)}.
       </h1>
       <p className="mt-1 text-tinta-suave">Aqui está o resumo da situação dos seus tanques.</p>
@@ -137,10 +137,11 @@ export default function PaginaInicio() {
                 <ItemTanque key={t.id} tanque={t} agora={agora} />
               ))}
             </ul>
-            <div className="hidden gap-4 sm:grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-2 2xl:grid-cols-3">
+            {/* 3 colunas só a partir de 1536 px: com a barra lateral, em 1024 px cada cartão ficava com ~220 px e cortava o nome */}
+            <div className="hidden gap-4 sm:grid sm:grid-cols-2 2xl:grid-cols-3">
               {lista.slice(0, 4).map((t, i) => (
                 // O 4º cartão só aparece nas grades de 2 colunas, para fechar 2 × 2.
-                <div key={t.id} className={i === 3 ? 'lg:hidden xl:block 2xl:hidden' : undefined}>
+                <div key={t.id} className={i === 3 ? '2xl:hidden' : undefined}>
                   <CartaoTanque tanque={t} agora={agora} />
                 </div>
               ))}
@@ -161,7 +162,7 @@ export default function PaginaInicio() {
                   id="tanque-grafico"
                   value={destaque.id}
                   onChange={(e) => setIdDestaque(Number(e.target.value))}
-                  className="min-h-9 rounded-lg border border-borda-forte bg-superficie px-2 text-sm"
+                  className="min-h-9 rounded-lg border border-borda-campo bg-superficie px-2 text-sm pointer-coarse:min-h-11"
                 >
                   {lista.map((t) => (
                     <option key={t.id} value={t.id}>

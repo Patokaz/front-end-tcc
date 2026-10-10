@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type MouseEvent } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation } from '@tanstack/react-query'
@@ -7,13 +7,16 @@ import { useTituloDocumento } from '@/compartilhado/hooks'
 import { esquemaConta, formatarTelefone, normalizarTelefone, type ValoresConta } from '@/dominio/formularios'
 import { ROTULO_PERFIL } from '@/dominio/rotulos'
 import { atualizarConta } from '@/infra/api/autenticacao'
+import type { Tema } from '@/infra/armazenamento/preferencias'
 import { Botao } from '@/ui/Botao'
 import { Alternador, CampoBusca, Campo } from '@/ui/Campos'
 import { CabecalhoCartao, Cartao } from '@/ui/Cartao'
 import { Aviso } from '@/ui/Estados'
+import { SeletorSegmentado } from '@/ui/Navegacao'
 import { useToast } from '@/ui/Toast'
 import { aplicarErrosDaApi } from '../../componentes/formularios'
 import { usePreferencias } from '../../preferencias'
+import { aplicarTema, trocarTemaComTransicao } from '../../tema'
 import { useAutenticacao, useUsuario } from '../autenticacao/ProvedorAutenticacao'
 
 // Textos do glossário vindos do Figma ("06 · Modo avançado / Glossário").
@@ -25,6 +28,12 @@ const GLOSSARIO = [
     termo: 'OD (Oxigênio dissolvido)',
     definicao: 'É a quantidade de oxigênio na água, essencial para a vida dos peixes. Abaixo de 3 mg/L, o risco é alto.',
   },
+]
+
+const OPCOES_TEMA: { valor: Tema; rotulo: string }[] = [
+  { valor: 'automatico', rotulo: 'Automático' },
+  { valor: 'claro', rotulo: 'Claro' },
+  { valor: 'escuro', rotulo: 'Escuro' },
 ]
 
 const normalizar = (texto: string) =>
@@ -104,14 +113,26 @@ function FormularioConta() {
 export default function PaginaConfiguracoes() {
   useTituloDocumento('Configurações')
   const { sair } = useAutenticacao()
-  const { modoAvancado, linguagemSimples, explicacaoOdDispensada, alterar } = usePreferencias()
+  const { modoAvancado, linguagemSimples, explicacaoOdDispensada, tema, alterar } = usePreferencias()
   const [busca, setBusca] = useState('')
+  const trocarTema = (novo: Tema, evento: MouseEvent<HTMLButtonElement>) => {
+    if (novo === tema) return
+    // o círculo parte do botão tocado (também quando a troca vem do teclado)
+    const botao = evento.currentTarget.getBoundingClientRect()
+    trocarTemaComTransicao(
+      () => {
+        alterar({ tema: novo })
+        aplicarTema(novo)
+      },
+      { x: botao.left + botao.width / 2, y: botao.top + botao.height / 2 },
+    )
+  }
   const termos = GLOSSARIO.filter((g) => normalizar(`${g.termo} ${g.definicao}`).includes(normalizar(busca)))
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <header>
-        <h1 className="text-2xl font-bold sm:text-3xl">Configurações</h1>
+        <h1 className="text-2xl font-semibold">Configurações</h1>
         <p className="mt-1 text-tinta-suave">Sua conta, preferências de exibição e glossário.</p>
       </header>
 
@@ -122,6 +143,13 @@ export default function PaginaConfiguracoes() {
 
       <Cartao aria-labelledby="titulo-preferencias" className="space-y-5">
         <CabecalhoCartao id="titulo-preferencias" titulo="Preferências" className="mb-0" />
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold">Tema</p>
+            <p className="text-xs text-tinta-suave">Automático segue o tema do aparelho. O claro é o mais legível sob sol.</p>
+          </div>
+          <SeletorSegmentado rotulo="Tema" opcoes={OPCOES_TEMA} valor={tema} aoMudar={trocarTema} />
+        </div>
         <Alternador
           rotulo="Modo avançado"
           descricao="Mostra valores técnicos, faixas ideais detalhadas e a confiança das previsões."
@@ -150,7 +178,7 @@ export default function PaginaConfiguracoes() {
             type="button"
             aria-label="Dispensar explicação"
             onClick={() => alterar({ explicacaoOdDispensada: true })}
-            className="absolute top-2 right-2 flex size-11 items-center justify-center rounded-lg text-tinta-suave hover:bg-white/60"
+            className="absolute top-2 right-2 flex size-11 items-center justify-center rounded-lg text-tinta-suave hover:bg-superficie/60"
           >
             <X aria-hidden className="size-5" />
           </button>
@@ -163,7 +191,7 @@ export default function PaginaConfiguracoes() {
         <dl className="mt-3 divide-y divide-borda">
           {termos.map((g) => (
             <div key={g.termo} className="py-3">
-              <dt className="font-medium">{g.termo}</dt>
+              <dt className="font-semibold">{g.termo}</dt>
               <dd className="text-sm text-tinta-suave">{g.definicao}</dd>
             </div>
           ))}

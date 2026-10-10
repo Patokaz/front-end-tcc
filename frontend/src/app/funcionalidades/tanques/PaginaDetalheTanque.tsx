@@ -124,7 +124,7 @@ export default function PaginaDetalheTanque() {
   useTituloDocumento(naoEncontrado ? 'Tanque não encontrado' : (tanque.data?.nome ?? 'Tanque'))
 
   const voltar = (
-    <Link to="/tanques" className="inline-flex min-h-9 items-center gap-1 text-sm font-medium text-primaria hover:underline print:hidden">
+    <Link to="/tanques" className="inline-flex min-h-9 items-center gap-1 text-sm font-semibold text-primaria pointer-coarse:min-h-11 hover:underline print:hidden">
       <ArrowLeft aria-hidden className="size-4" />
       Tanques
     </Link>
@@ -167,7 +167,7 @@ export default function PaginaDetalheTanque() {
       {voltar}
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="flex flex-wrap items-center gap-2 text-2xl font-bold sm:text-3xl">
+          <h1 className="flex flex-wrap items-center gap-2 text-2xl font-semibold">
             {t.nome}
             <SeloRisco nivel={t.nivel_risco} />
             {t.status !== 'ativo' && <Etiqueta>{ROTULO_STATUS_TANQUE[t.status]}</Etiqueta>}
@@ -195,14 +195,14 @@ export default function PaginaDetalheTanque() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[22rem_minmax(0,1fr)]">
         <div className="space-y-6">
-          <CartaoVeredito previsao={previsao.data} tanque={t} carregando={previsao.isPending} />
+          <CartaoVeredito previsao={previsao.data} tanque={t} carregando={previsao.isPending} destaque />
           <Cartao aria-labelledby="titulo-parametros">
             <CabecalhoCartao
               id="titulo-parametros"
               titulo="Parâmetros agora"
               acao={
                 situacao.tipo === 'online' && (
-                  <span className="text-xs font-medium text-primaria">Atualizado {tempoRelativo(situacao.ultimaLeitura, agora)}</span>
+                  <span className="text-xs font-semibold text-primaria">Atualizado {tempoRelativo(situacao.ultimaLeitura, agora)}</span>
                 )
               }
             />

@@ -111,7 +111,7 @@ function SeletorStatusSensor({ idTanque, idSensor, status, rotulo }: { idTanque:
           },
         )
       }
-      className="min-h-9 rounded-lg border border-borda-forte bg-superficie px-2 text-sm"
+      className="min-h-9 rounded-lg border border-borda-campo bg-superficie px-2 text-sm pointer-coarse:min-h-11"
     >
       {Object.entries(ROTULO_STATUS_SENSOR).map(([valor, texto]) => (
         <option key={valor} value={valor}>

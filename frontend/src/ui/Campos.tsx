@@ -6,7 +6,7 @@ const classeControle = (erro?: string) =>
   cn(
     'block w-full rounded-lg border bg-superficie px-3 text-base text-tinta placeholder:text-tinta-suave/70 sm:text-sm',
     'min-h-11 disabled:bg-neutro-fundo disabled:text-tinta-suave',
-    erro ? 'border-critico' : 'border-borda-forte',
+    erro ? 'border-critico' : 'border-borda-campo',
   )
 
 interface PropsEnvelope {
@@ -39,7 +39,7 @@ function Envelope({ id, rotulo, dica, erro, obrigatorio, children, className }: 
         </p>
       )}
       {erro && (
-        <p id={`${id}-erro`} className="text-xs font-medium text-critico">
+        <p id={`${id}-erro`} className="text-xs font-semibold text-critico">
           {erro}
         </p>
       )}
@@ -166,12 +166,12 @@ export const CaixaSelecao = forwardRef<HTMLInputElement, PropsCaixa>(function Ca
         ref={ref}
         id={id}
         type="checkbox"
-        className="mt-0.5 size-5 shrink-0 rounded border-borda-forte accent-primaria"
+        className="mt-0.5 size-5 shrink-0 rounded border-borda-campo accent-primaria"
         aria-describedby={texto ? `${id}-descricao` : undefined}
         {...props}
       />
       <div>
-        <label htmlFor={id} className="text-sm font-medium">
+        <label htmlFor={id} className="text-sm font-semibold">
           {rotulo}
         </label>
         {texto && (
@@ -227,8 +227,9 @@ export function Alternador({ rotulo, descricao: texto, ligado, aoAlternar }: Pro
         aria-describedby={texto ? `${id}-descricao` : undefined}
         onClick={() => aoAlternar(!ligado)}
         className={cn(
-          'relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors',
-          ligado ? 'bg-primaria' : 'bg-borda-forte',
+          // o ::before amplia a área de toque para 44 px de altura sem mudar o desenho
+          "relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors before:absolute before:-inset-2 before:content-['']",
+          ligado ? 'bg-primaria-solida' : 'bg-borda-campo',
         )}
       >
         <span

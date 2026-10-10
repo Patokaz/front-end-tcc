@@ -29,10 +29,12 @@ describe('aerador (F-02)', () => {
     const dialogo = await screen.findByRole('dialog', { name: 'Desligar o aerador?' })
     await usuario.click(within(dialogo).getByRole('button', { name: 'Desligar aerador' }))
 
+    // folga maior que o 1 s padrão: mutação + nova consulta, e a suíte inteira roda em paralelo
+    const espera = { timeout: 4000 }
     expect(
-      await screen.findByText('Comando enviado. O aerador do Tanque Norte deve desligar em instantes.'),
+      await screen.findByText('Comando enviado. O aerador do Tanque Norte deve desligar em instantes.', {}, espera),
     ).toBeInTheDocument()
-    expect(await within(controle).findByText('Último comando: desligar, agora.')).toBeInTheDocument()
+    expect(await within(controle).findByText('Último comando: desligar, agora.', {}, espera)).toBeInTheDocument()
   })
 
   it('avisa quando a API não consegue entregar o comando ao broker (503)', async () => {
@@ -48,7 +50,9 @@ describe('aerador (F-02)', () => {
     const dialogo = await screen.findByRole('dialog', { name: 'Ligar o aerador?' })
     await usuario.click(within(dialogo).getByRole('button', { name: 'Ligar aerador' }))
 
-    expect(await screen.findByText('Não foi possível enviar o comando ao nó sensor. Tente novamente.')).toBeInTheDocument()
+    expect(
+      await screen.findByText('Não foi possível enviar o comando ao nó sensor. Tente novamente.', {}, { timeout: 4000 }),
+    ).toBeInTheDocument()
     expect(within(controle).getByText('Nenhum comando enviado ainda.')).toBeInTheDocument()
   })
 })
