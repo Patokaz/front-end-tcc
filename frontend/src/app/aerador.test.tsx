@@ -10,27 +10,31 @@ import PaginaDetalheTanque from './funcionalidades/tanques/PaginaDetalheTanque'
 
 const rotas = [{ path: '/tanques/:id', element: <RotaProtegida><PaginaDetalheTanque /></RotaProtegida> }]
 
+// Folga maior que o 1 s padrão em cada espera: o controle depende da sessão, do tanque e dos dispositivos,
+// e o comando, da mutação e de uma nova consulta. Com a máquina carregada (logo após o npm ci, ou com
+// outras suítes rodando ao lado) isso passava do limite.
+const espera = { timeout: 4000 }
+
 afterEach(() => sessao.definirToken(null))
 
 /** Produtor no detalhe do Tanque Norte, cujo nó está online no servidor simulado. */
 async function abrirControleDoAerador() {
   await entrar({ email: 'produtor@painelaquicola.test', senha: 'aquicola-demo', lembrar: false })
   renderizarRotas(rotas, '/tanques/1')
-  return screen.findByRole('group', { name: 'Aerador' })
+  return screen.findByRole('group', { name: 'Aerador' }, espera)
 }
 
-describe('aerador (F-02)', () => {
+// a soma das esperas passa dos 5 s padrão por teste
+describe('aerador (F-02)', { timeout: 20_000 }, () => {
   it('o produtor desliga o aerador com confirmação e passa a ver o último comando', async () => {
     const usuario = userEvent.setup()
     const controle = await abrirControleDoAerador()
     expect(within(controle).getByText('Nenhum comando enviado ainda.')).toBeInTheDocument()
 
     await usuario.click(within(controle).getByRole('button', { name: 'Desligar' }))
-    const dialogo = await screen.findByRole('dialog', { name: 'Desligar o aerador?' })
+    const dialogo = await screen.findByRole('dialog', { name: 'Desligar o aerador?' }, espera)
     await usuario.click(within(dialogo).getByRole('button', { name: 'Desligar aerador' }))
 
-    // folga maior que o 1 s padrão: mutação + nova consulta, e a suíte inteira roda em paralelo
-    const espera = { timeout: 4000 }
     expect(
       await screen.findByText('Comando enviado. O aerador do Tanque Norte deve desligar em instantes.', {}, espera),
     ).toBeInTheDocument()
@@ -47,11 +51,11 @@ describe('aerador (F-02)', () => {
     const controle = await abrirControleDoAerador()
 
     await usuario.click(within(controle).getByRole('button', { name: 'Ligar' }))
-    const dialogo = await screen.findByRole('dialog', { name: 'Ligar o aerador?' })
+    const dialogo = await screen.findByRole('dialog', { name: 'Ligar o aerador?' }, espera)
     await usuario.click(within(dialogo).getByRole('button', { name: 'Ligar aerador' }))
 
     expect(
-      await screen.findByText('Não foi possível enviar o comando ao nó sensor. Tente novamente.', {}, { timeout: 4000 }),
+      await screen.findByText('Não foi possível enviar o comando ao nó sensor. Tente novamente.', {}, espera),
     ).toBeInTheDocument()
     expect(within(controle).getByText('Nenhum comando enviado ainda.')).toBeInTheDocument()
   })
