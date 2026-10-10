@@ -1,0 +1,67 @@
+@import 'tailwindcss';
+
+/* Tokens de cor a partir do Figma "Painel Aquícola". Contraste de texto ≥ 4,5:1 sobre branco. */
+@theme {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+
+  --color-fundo: #f3f5f8;
+  --color-superficie: #ffffff;
+  --color-borda: #e2e8f0;
+  --color-borda-forte: #cbd5e1;
+  --color-tinta: #1e293b;
+  --color-tinta-suave: #526072;
+
+  --color-marinho: #1e3a5f;
+  --color-marinho-escuro: #152b47;
+  --color-primaria: #2563eb;
+  --color-primaria-escura: #1d4ed8;
+  --color-primaria-fundo: #eef3fe;
+  --color-menu-ativo: #576882;
+
+  --color-otimo: #15803d;
+  --color-otimo-fundo: #eaf7ef;
+  --color-otimo-borda: #bfe5cd;
+  --color-atencao: #a85008;
+  --color-atencao-fundo: #fff6e6;
+  --color-atencao-borda: #f5d9a8;
+  --color-critico: #dc2626;
+  --color-critico-escuro: #b91c1c;
+  --color-critico-fundo: #fdeeee;
+  --color-critico-borda: #f6c6c6;
+  --color-neutro: #64748b;
+  --color-neutro-fundo: #f1f5f9;
+}
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply bg-fundo font-sans text-tinta antialiased;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-primaria);
+    outline-offset: 2px;
+  }
+
+  dialog::backdrop {
+    background: rgb(15 23 42 / 0.45);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@media print {
+  body {
+    background: white;
+  }
+}

@@ -1,0 +1,173 @@
+diff --git a/README.md b/README.md
+index 73e754c..913e9ba 100644
+--- a/README.md
++++ b/README.md
+@@ -45,10 +45,10 @@ como segundos desde o boot e o backend receberia leitura datada de 1970.
+ 
+ | Arquivo | Responsabilidade |
+ |---|---|
+-| `no_sensor.ino` | laço principal, payload JSON, comandos de bancada |
++| `no_sensor.ino` | laço principal, payload JSON, comandos de bancada, comando do aerador |
+ | `sensores.h` | leitura e conversão dos três sensores; falha vira `NAN` |
+ | `buffer_leituras.h` | fila circular FIFO de 120 leituras |
+-| `rede.h` | Wi-Fi, NTP e MQTT QoS 1 com máquina de estados |
++| `rede.h` | Wi-Fi, NTP e MQTT QoS 1 com máquina de estados; assina o tópico de comando |
+ | `display_ui.h` | OLED, LED de status e buzzer |
+ | `config.h` | credenciais e calibração — **não versionado** |
+ | `config.example.h` | modelo do `config.h`, com todos os valores comentados |
+@@ -91,6 +91,41 @@ Tópico: `<MQTT_TOPICO_PREFIXO>/<mac>/leituras`
+ > perder na volta com a mensagem já entregue; a republicação é duplicata legítima
+ > do at-least-once.
+ 
++### Comando do aerador (relé)
++
++O nó assina `<MQTT_TOPICO_PREFIXO>/<mac>/aerador` a cada conexão. A API do painel
++publica nesse tópico (sub-projeto 5) quando alguém liga ou desliga o aerador:
++
++```json
++{"acao":"ligar","id":12,"ts":1791590400}
++```
++
++- `acao`: `ligar` ou `desligar`; qualquer outra coisa é ignorada (com log no Serial).
++- `id`: o registro em `acionamentos_atuador`, só para o log; `ts`: epoch UTC do comando.
++- A mensagem vem **retida**, com QoS 1. O broker guarda o último comando, e o nó que
++  reinicia ou volta de uma queda recebe o estado pedido assim que assina. No boot o
++  relé continua **desligado** até essa mensagem chegar.
++- Na queda de rede o relé fica como está (CT03).
++- O nó ainda **não confirma** o estado do relé ao backend: o painel mostra o último
++  comando enviado.
++
++Teste sem o painel (no PC, com o nó ligado):
++
++```powershell
++$mosq = "C:\Program Files\mosquitto"
++# payload num arquivo: evita o escape de aspas, que muda entre versoes do PowerShell
++'{"acao":"ligar","id":0,"ts":0}' | Set-Content -NoNewline -Encoding ascii comando.json
++& "$mosq\mosquitto_pub.exe" -h broker.hivemq.com -p 1883 -q 1 -r `
++  -t "tcc-piscicultura-morgado/a4f00f643c70/aerador" -f comando.json
++# apagar o comando retido (o nó ignora a mensagem vazia):
++& "$mosq\mosquitto_pub.exe" -h broker.hivemq.com -p 1883 -q 1 -r -n `
++  -t "tcc-piscicultura-morgado/a4f00f643c70/aerador"
++```
++
++> ⚠️ No broker público qualquer pessoa que souber o tópico consegue ligar ou desligar
++> o relé. Serve para a bancada; em uso real o broker precisa ser privado e com senha
++> (a VPS prevista no TC1).
++
+ ### Comandos pelo Serial (115200)
+ 
+ | Comando | Efeito |
+diff --git a/firmware/no_sensor/no_sensor.ino b/firmware/no_sensor/no_sensor.ino
+index 73c28b2..04bf248 100644
+--- a/firmware/no_sensor/no_sensor.ino
++++ b/firmware/no_sensor/no_sensor.ino
+@@ -1,4 +1,5 @@
+-// Firmware do no sensor - TCC piscicultura. v2: buffer offline + ressincronizacao (CT03).
++// Firmware do no sensor - TCC piscicultura. v3: v2 (buffer offline + ressincronizacao,
++// CT03) + comando do aerador pelo painel (MQTT).
+ // Arquitetura: TODA leitura entra no buffer e o laco drena publicando a mais antiga
+ // quando online. Fluxo normal e ressincronizacao passam pelo mesmo caminho -- o
+ // fluxo normal e so o caso em que a fila tem um item. Isso evita a duplicacao de
+@@ -16,6 +17,7 @@ bool temLeitura = false;
+ uint8_t errosAnteriores = 0;
+ EstadoRede estadoAnterior = REDE_WIFI_CONECTANDO;
+ String topicoLeituras;
++String topicoAerador;
+ 
+ // Bitmask dos sensores em falha, para bipar so na transicao (a spec pede 2 bips
+ // no erro de sensor; sem isso o buzzer tocaria a cada ciclo enquanto durasse).
+@@ -55,6 +57,32 @@ const char* nomeEstado(EstadoRede e) {
+   return "?";
+ }
+ 
++// Comando do aerador vindo do painel: API -> broker -> no (sub-projeto 5, F-02 do Figma).
++// Payload {"acao":"ligar"|"desligar","id":N,"ts":epoch}. A API publica com retain: ao
++// (re)conectar, o no recebe o ultimo comando e volta ao estado pedido. No boot o rele
++// continua DESLIGADO (setup) ate essa mensagem chegar.
++void aoReceberComandoAerador(String &topico, String &payload) {
++  if (topico != topicoAerador) return;
++  JsonDocument doc;
++  if (deserializeJson(doc, payload)) {
++    // payload vazio = retido apagado no broker; qualquer outro e mensagem malformada
++    if (payload.length() > 0) Serial.println("Aerador: comando ignorado (JSON invalido): " + payload);
++    return;
++  }
++  const char* acao = doc["acao"] | "";
++  bool ligar;
++  if (strcmp(acao, "ligar") == 0) {
++    ligar = true;
++  } else if (strcmp(acao, "desligar") == 0) {
++    ligar = false;
++  } else {
++    Serial.println("Aerador: comando ignorado (acao desconhecida): " + payload);
++    return;
++  }
++  digitalWrite(PIN_RELE, ligar ? RELE_LIGADO : RELE_DESLIGADO);
++  Serial.printf("Aerador %s (comando %ld do painel)\n", ligar ? "LIGADO" : "DESLIGADO", (long)(doc["id"] | 0));
++}
++
+ // Comandos de bancada. Existem por causa do CT03: nesta rede derrubar o roteador
+ // tira o broker do ar junto com o no (ver rede.h), e a queda precisa ser
+ // reproduzivel para virar evidencia.
+@@ -96,7 +124,7 @@ void setup() {
+   uiChecarLed();
+ 
+   Serial.println();
+-  Serial.println("no_sensor v2 - leitura integrada + MQTT QoS 1 + buffer offline");
++  Serial.println("no_sensor v3 - leitura integrada + MQTT QoS 1 + buffer offline + aerador");
+ #if !PH_CALIBRADO
+   Serial.println("AVISO: pH usa constantes de fabrica (nao calibrado). O valor de pH");
+   Serial.println("       serve para conferir a resposta do sensor, nao como medida.");
+@@ -109,6 +137,9 @@ void setup() {
+   redeIniciar();
+   topicoLeituras = String(MQTT_TOPICO_PREFIXO) + "/" + macLimpo() + "/leituras";
+   Serial.println("Topico: " + topicoLeituras);
++  topicoAerador = String(MQTT_TOPICO_PREFIXO) + "/" + macLimpo() + "/aerador";
++  redeAssinarComandos(topicoAerador, aoReceberComandoAerador);
++  Serial.println("Topico de comando: " + topicoAerador);
+ }
+ 
+ void loop() {
+diff --git a/firmware/no_sensor/rede.h b/firmware/no_sensor/rede.h
+index 53e1f36..5bbca81 100644
+--- a/firmware/no_sensor/rede.h
++++ b/firmware/no_sensor/rede.h
+@@ -54,6 +54,10 @@ static bool redeWifiEstavaConectado = false;
+ // mais "conectando" — a UI e o CT03 dependem dessa distincao.
+ static bool redeJaEsteveOnline = false;
+ 
++// Topico de comando do aerador, assinado a cada conexao: com sessao limpa o broker
++// esquece a assinatura quando o no cai. Vazio = nao assina nada.
++static String redeTopicoComando;
++
+ // ---- Gatilho de teste do CT03 ----
+ // Derrubar o roteador nao serve de teste nesta bancada: a internet do PC vem por
+ // cabo do Mac que a compartilha, entao o roteador cair tira o broker do ar junto e
+@@ -90,6 +94,14 @@ inline void redeIniciar() {
+   Serial.printf("Rede: SSID \"%s\", broker %s:%d\n", WIFI_SSID, MQTT_BROKER_IP, MQTT_BROKER_PORTA);
+ }
+ 
++// Registra o topico de comando e quem trata a mensagem. Chamar uma vez no setup,
++// depois do redeIniciar() (o topico usa o MAC). A biblioteca chama `aoReceber` de
++// dentro do redeMqtt.loop(): nao publicar nem assinar dentro dele.
++inline void redeAssinarComandos(const String& topico, MQTTClientCallbackSimple aoReceber) {
++  redeTopicoComando = topico;
++  redeMqtt.onMessage(aoReceber);
++}
++
+ // Corta o Wi-Fi por `duracaoMs` para executar o CT03. Acionado pelo comando
+ // "queda" no Serial (ver no_sensor.ino); nao entra no caminho normal do firmware.
+ inline void redeSimularQueda(unsigned long duracaoMs) {
+@@ -171,6 +183,12 @@ inline void redeLoop() {
+         if (redeBackoffMqttMs > REDE_BACKOFF_MQTT_MAX_MS) redeBackoffMqttMs = REDE_BACKOFF_MQTT_MAX_MS;
+         Serial.printf("Rede: MQTT nao conectou (erro=%d rc=%d), proxima em %lu ms\n",
+                       (int)redeMqtt.lastError(), (int)redeMqtt.returnCode(), redeBackoffMqttMs);
++      } else if (redeTopicoComando.length() > 0 && !redeMqtt.subscribe(redeTopicoComando.c_str(), 1)) {
++        // Sem a assinatura o comando do aerador nao chega: fecha e tenta de novo
++        // na proxima janela de reconexao, em vez de ficar online "surdo".
++        Serial.printf("Rede: falha ao assinar %s (erro=%d), reconectando\n",
++                      redeTopicoComando.c_str(), (int)redeMqtt.lastError());
++        redeMqtt.disconnect();
+       }
+     }
+     return;

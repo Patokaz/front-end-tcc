@@ -1,0 +1,3403 @@
+diff --git a/backend/.env.example b/backend/.env.example
+index 7fd8941..c140677 100644
+--- a/backend/.env.example
++++ b/backend/.env.example
+@@ -7,3 +7,9 @@ DB_PORT=5432
+ DB_NAME=piscicultura
+ DB_USER=
+ DB_PASSWORD=
++
++# API HTTP do painel (python -m src.api). Gerar o segredo com:
++# python -c "import secrets; print(secrets.token_urlsafe(48))"
++API_JWT_SEGREDO=
++API_HOST=127.0.0.1
++API_PORTA=8000
+diff --git a/backend/API.md b/backend/API.md
+new file mode 100644
+index 0000000..ca5c1af
+--- /dev/null
++++ b/backend/API.md
+@@ -0,0 +1,124 @@
++# API HTTP do painel
++
++FastAPI que entrega ao front-end (Painel Aquícola) o que a ingestão MQTT grava em `leituras` e o serviço de ML grava em `previsoes`, faz o cadastro de tanques e dispositivos (UC01) e envia o comando do aerador ao nó sensor. Segue o contrato `docs/CONTRATO_API.md` do repositório do front-end.
++
++## Rodar
++
++Na pasta `backend/`, com o `.venv` ativo:
++
++```powershell
++pip install -r requirements.txt
++```
++
++No `.env`, além das variáveis que já existem, defina o segredo dos tokens (RNF05):
++
++```powershell
++python -c "import secrets; print(secrets.token_urlsafe(48))"
++# copie a saída para API_JWT_SEGREDO= no .env
++```
++
++Crie um usuário (a senha é pedida no terminal). O usuário do seed não tem senha; o mesmo comando define uma para ele:
++
++```powershell
++python -m src.api.usuarios --email admin@exemplo.com --nome "Nome Sobrenome" --perfil admin
++python -m src.api.usuarios --email operador@piscicultura.local
++```
++
++Suba a API (padrão: `http://127.0.0.1:8000`; documentação interativa em `/api/v1/docs`):
++
++```powershell
++python -m src.api
++```
++
++O front-end usa a API pelo proxy do Vite, na mesma origem. Na pasta do front: `VITE_USAR_MOCKS=false` e `API_PROXY_ALVO=http://127.0.0.1:8000` no `.env.development.local`, depois `npm run dev`.
++
++Para haver leituras e previsões, rodam ao lado dela a ingestão (`python -m src.main`) e o serviço de ML. A API usa o mesmo broker MQTT do `.env` (`MQTT_BROKER_HOST`, `MQTT_BROKER_PORT`, `MQTT_TOPIC_PREFIX`) para publicar os comandos do aerador.
++
++## Rotas
++
++Todas com prefixo `/api/v1`. Fora `/auth/login`, `/auth/refresh` e `/auth/logout`, exigem `Authorization: Bearer <token>`.
++
++| Rota | O que devolve |
++|---|---|
++| `POST /auth/login` | access token (15 min) no corpo e refresh token em cookie `HttpOnly; Secure; SameSite=Strict; Path=/api/v1/auth` (sessão, ou 30 dias com `lembrar`) |
++| `POST /auth/refresh` | novo access token, a partir do cookie |
++| `POST /auth/logout` | apaga o cookie |
++| `GET` / `PATCH /auth/eu` | usuário logado; o PATCH altera nome e telefone (`+55…`) |
++| `GET /especies` | catálogo de espécies |
++| `GET /tanques`, `GET /tanques/{id}` | tanque com espécie, últimas leituras, OD estimado, nível atual e dispositivos |
++| `GET /tanques/{id}/dispositivos` | dispositivos com sensores e o último comando do aerador (`ultimo_acionamento`) |
++| `GET /tanques/{id}/leituras` | séries por grandeza: `bucket=raw\|5m\|1h`, `desde`, `ate`, `grandezas` |
++| `GET /tanques/{id}/previsoes/atual` | último ciclo do ML: OD de agora (h = 0) e risco de 1 a 3 h |
++| `GET /alertas` | lista vazia até o sub-projeto 4 (N8N) existir |
++| `GET /eventos` | acionamentos do aerador, mais recentes primeiro (os alertas entram quando existirem) |
++| `POST /tanques` | **admin** · cria o tanque e, se vier `dispositivo`, o nó com os 3 sensores, na mesma transação |
++| `PATCH /tanques/{id}` | **admin** · altera os dados do tanque; "excluir" é mudar `status` para `inativo` |
++| `POST /dispositivos` | **admin** · cria um nó em um tanque existente, com os 3 sensores |
++| `PATCH /dispositivos/{id}` | **admin** · altera nome, MAC, modelo, firmware e IP |
++| `PATCH /sensores/{id}` | **admin** · muda o status do sensor (`ativo`, `inativo`, `em_calibracao`) |
++| `POST /dispositivos/{id}/aerador` | qualquer usuário · `{"acao": "ligar" \| "desligar"}` → **202** com o acionamento registrado |
++
++## Regras que a API aplica
++
++### Cadastro (UC01)
++
++- **Permissão:** só o perfil `admin` (o `operador` recebe 403).
++- **MAC:** aceito com `:`, `-` ou sem separador, e gravado como `aa:bb:cc:dd:ee:ff`, o formato que a ingestão procura. MAC repetido dá **409** no campo (`dispositivo.mac_address` ou `mac_address`), também quando dois cadastros chegam juntos.
++- **Sensores:** todo dispositivo novo ganha os 3 sensores do nó (`TIPOS_SENSOR_PADRAO` do seed: SEN0161-V2, DS18B20, SEN0189). Sem eles a ingestão descarta as leituras. Se o catálogo `tipos_sensor` estiver vazio, a API cria os tipos como o seed faz.
++- **Validação (422, mensagens em português no campo):**
++  - nome obrigatório;
++  - espécie do catálogo;
++  - volume > 0;
++  - quantidade ≥ 0;
++  - data de povoamento que não esteja no futuro;
++  - IP válido;
++  - limites de tamanho das colunas.
++- **Sem exclusão:** o tanque vai para `inativo` e o histórico fica.
++- **Status do sensor:** o serviço de ML só lê sensores `ativo`. Com o pH ou a temperatura `inativo` ou `em_calibracao`, o tanque fica sem previsão.
++
++### Comando do aerador (F-02)
++
++- **Quem:** qualquer usuário autenticado (decisão do usuário em 09/10: quem cuida do tanque age na emergência).
++- **O que a API faz:**
++  1. grava o acionamento em `acionamentos_atuador` (`id_previsao` nulo, `motivo` = "Comando manual de <nome> pelo painel.");
++  2. publica no broker;
++  3. responde **202**. Se o broker não confirmar em 5 s, desfaz o registro e responde **503**.
++- **Protocolo com o firmware:**
++  - tópico `<MQTT_TOPIC_PREFIX>/<mac sem separador>/aerador`;
++  - payload `{"acao": "ligar" | "desligar", "id": <acionamento>, "ts": <epoch UTC>}`;
++  - QoS 1 e **retido**: o nó que reinicia ou volta de uma queda recebe o último comando ao assinar.
++- **Firmware:** o nó precisa da versão que assina esse tópico (patch `firmware-aerador.patch` para o repositório `sistema`). Sem ela, o comando chega ao broker e nada acontece no relé.
++- **Sem confirmação:** o nó ainda não informa o estado real do relé; o painel mostra o último comando enviado.
++- **Automático × manual:** um acionamento é automático quando tem `id_previsao` (disparado por uma previsão, como o TC1 prevê para OD < 3 mg/L). Ninguém grava acionamento automático ainda.
++- **Segurança:** no broker público (`broker.hivemq.com`) qualquer um que souber o tópico aciona o relé. Para uso real, broker privado com usuário e senha.
++
++### Leitura
++
++- **OD:** vem da linha `h = 0` de `previsoes` (`estimado: true`). `baixa_confianca` é `confianca < ML_CONFIANCA_MIN` (0,5), como no serviço de ML.
++- **Previsão válida:** o último ciclo do ML tem no máximo 15 min (3 ciclos) e o tanque está `ativo`, com espécie. Fora disso, `previsoes/atual` volta sem nível, sem OD e sem horizontes. O `gerada_em` continua preenchido quando a previsão só está velha, para o painel mostrar "desatualizada desde…".
++- **Nível atual do tanque:** o pior entre pH e temperatura da última leitura (regra de `ml/src/faixas.py`, copiada em `src/api/faixas.py`) e o nível do OD que o ML gravou. Não há outra classificação na API. *A confirmar com a equipe.*
++- **Dispositivo online:** última leitura há no máximo 5 min (a ingestão não atualiza `status_conexao` nem `ultimo_heartbeat`).
++- **Séries:** `date_bin` do PostgreSQL (dispensa TimescaleDB nos testes); a série de OD sai das linhas `h = 0`, uma a cada 5 min. Cada pedido aceita até 5.000 pontos.
++- **Senhas:** `scrypt` da biblioteca padrão. Os tokens não guardam estado no servidor: sair apaga o cookie, e o access token expira em 15 min.
++
++## Testes
++
++```powershell
++pytest tests/api
++```
++
++`test_cadastro.py` também confere que um dispositivo cadastrado pela API passa a ter as leituras aceitas pelo `LeituraProcessor` da ingestão.
++
++`test_comando_aerador_mqtt.py` usa o broker de teste do `docker-compose` (`mosquitto-test`, porta 1884), como o teste de fumaça da equipe. Os outros testes da API usam um publicador falso e não precisam de broker.
++
++Usam o mesmo banco de teste (`piscicultura_test`) e as mesmas fixtures dos testes da ingestão.
++
++## Pendências
++
++- Confirmação do estado do relé pelo nó (hoje o painel só sabe o último comando).
++- Acionamento automático do aerador pelo OD estimado (TC1: abaixo de 3 mg/L).
++- Broker MQTT privado e com senha antes de uso real.
++- Alertas e eventos, quando o sub-projeto 4 gravar em `alertas`.
++- WebSocket (Socket.IO). Enquanto ele não existe, o painel consulta a cada 30 s.
++- Índice `previsoes (id_tanque, ts_previsao DESC)`: a busca do último ciclo hoje percorre a tabela. Basta para a escala do TCC.
++- Limite de tentativas de login.
+diff --git a/backend/alembic/env.py b/backend/alembic/env.py
+index 3751025..ee80699 100644
+--- a/backend/alembic/env.py
++++ b/backend/alembic/env.py
+@@ -1,66 +1,65 @@
+-import sys
+-from logging.config import fileConfig
+-from pathlib import Path
+-
+-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+-
+-from alembic import context
+-from sqlalchemy import engine_from_config, pool
+-
+-from src.config import Settings
+-from src.db.models import Base
+-
+-config = context.config
+-
+-if config.config_file_name is not None:
+-    fileConfig(config.config_file_name)
+-
+-target_metadata = Base.metadata
+-
+-TABELAS_FORA_DO_ESCOPO = {
+-    "alertas",
+-    "eventos_mortalidade",
+-    "acionamentos_atuador",
+-}
+-
+-
+-def include_object(object, name, type_, reflected, compare_to):
+-    if type_ == "table" and reflected and compare_to is None and name in TABELAS_FORA_DO_ESCOPO:
+-        return False
+-    return True
+-
+-
+-def _url() -> str:
+-    return Settings().database_url
+-
+-
+-def run_migrations_offline() -> None:
+-    context.configure(
+-        url=_url(),
+-        target_metadata=target_metadata,
+-        literal_binds=True,
+-        include_object=include_object,
+-    )
+-    with context.begin_transaction():
+-        context.run_migrations()
+-
+-
+-def run_migrations_online() -> None:
+-    configuration = config.get_section(config.config_ini_section) or {}
+-    configuration["sqlalchemy.url"] = _url()
+-    connectable = engine_from_config(configuration, prefix="sqlalchemy.", poolclass=pool.NullPool)
+-
+-    with connectable.connect() as connection:
+-        context.configure(
+-            connection=connection,
+-            target_metadata=target_metadata,
+-            include_object=include_object,
+-        )
+-        with context.begin_transaction():
+-            context.run_migrations()
+-
+-
+-if context.is_offline_mode():
+-    run_migrations_offline()
+-else:
++import sys
++from logging.config import fileConfig
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
++
++from alembic import context
++from sqlalchemy import engine_from_config, pool
++
++from src.config import Settings
++from src.db.models import Base
++
++config = context.config
++
++if config.config_file_name is not None:
++    fileConfig(config.config_file_name)
++
++target_metadata = Base.metadata
++
++TABELAS_FORA_DO_ESCOPO = {
++    "alertas",
++    "eventos_mortalidade",
++}
++
++
++def include_object(object, name, type_, reflected, compare_to):
++    if type_ == "table" and reflected and compare_to is None and name in TABELAS_FORA_DO_ESCOPO:
++        return False
++    return True
++
++
++def _url() -> str:
++    return Settings().database_url
++
++
++def run_migrations_offline() -> None:
++    context.configure(
++        url=_url(),
++        target_metadata=target_metadata,
++        literal_binds=True,
++        include_object=include_object,
++    )
++    with context.begin_transaction():
++        context.run_migrations()
++
++
++def run_migrations_online() -> None:
++    configuration = config.get_section(config.config_ini_section) or {}
++    configuration["sqlalchemy.url"] = _url()
++    connectable = engine_from_config(configuration, prefix="sqlalchemy.", poolclass=pool.NullPool)
++
++    with connectable.connect() as connection:
++        context.configure(
++            connection=connection,
++            target_metadata=target_metadata,
++            include_object=include_object,
++        )
++        with context.begin_transaction():
++            context.run_migrations()
++
++
++if context.is_offline_mode():
++    run_migrations_offline()
++else:
+     run_migrations_online()
+\ No newline at end of file
+diff --git a/backend/requirements.txt b/backend/requirements.txt
+index 6779010..6c9c136 100644
+--- a/backend/requirements.txt
++++ b/backend/requirements.txt
+@@ -5,4 +5,8 @@ psycopg[binary]>=3.1,<4
+ python-dotenv>=1.0,<2
+ pydantic>=2.6,<3
+ pydantic-settings>=2.2,<3
+-pytest>=8.0,<9
+\ No newline at end of file
++pytest>=8.0,<9
++fastapi>=0.115,<1
++uvicorn>=0.30,<1
++pyjwt>=2.8,<3
++httpx>=0.27,<1
+diff --git a/backend/src/api/__init__.py b/backend/src/api/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/src/api/__main__.py b/backend/src/api/__main__.py
+new file mode 100644
+index 0000000..ffd2e89
+--- /dev/null
++++ b/backend/src/api/__main__.py
+@@ -0,0 +1,16 @@
++import logging
++
++import uvicorn
++
++from src.api.app import criar_app
++from src.api.config import ConfigApi
++
++
++def main() -> None:
++    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
++    config = ConfigApi()
++    uvicorn.run(criar_app(config), host=config.api_host, port=config.api_porta)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/backend/src/api/app.py b/backend/src/api/app.py
+new file mode 100644
+index 0000000..0d80e7e
+--- /dev/null
++++ b/backend/src/api/app.py
+@@ -0,0 +1,49 @@
++from contextlib import asynccontextmanager
++
++from fastapi import FastAPI
++from sqlalchemy.orm import Session, sessionmaker
++
++from src.api.comando_aerador import PublicadorMqtt
++from src.api.config import ConfigApi
++from src.api.rotas import aerador, alertas, autenticacao, cadastro, catalogos, tanques
++from src.config import Settings
++from src.db.session import criar_engine, criar_session_factory
++
++PREFIXO = "/api/v1"
++
++
++@asynccontextmanager
++async def _ciclo_de_vida(app: FastAPI):
++    app.state.publicador.iniciar()
++    yield
++    app.state.publicador.parar()
++
++
++def criar_app(
++    config: ConfigApi | None = None,
++    fabrica_sessao: sessionmaker[Session] | None = None,
++    publicador: PublicadorMqtt | None = None,
++) -> FastAPI:
++    config = config or ConfigApi()
++    if fabrica_sessao is None or publicador is None:
++        settings = Settings()
++        fabrica_sessao = fabrica_sessao or criar_session_factory(criar_engine(settings))
++        publicador = publicador or PublicadorMqtt(
++            settings.mqtt_broker_host, settings.mqtt_broker_port, settings.mqtt_topic_prefix
++        )
++
++    app = FastAPI(
++        title="API do Painel Aquicola",
++        version="0.3.0",
++        # documentacao dentro do prefixo para abrir tambem pelo proxy do front (/api/v1/docs)
++        docs_url=f"{PREFIXO}/docs",
++        openapi_url=f"{PREFIXO}/openapi.json",
++        redoc_url=None,
++        lifespan=_ciclo_de_vida,
++    )
++    app.state.config = config
++    app.state.fabrica_sessao = fabrica_sessao
++    app.state.publicador = publicador
++    for modulo in (autenticacao, catalogos, tanques, cadastro, aerador, alertas):
++        app.include_router(modulo.router, prefix=PREFIXO)
++    return app
+diff --git a/backend/src/api/comando_aerador.py b/backend/src/api/comando_aerador.py
+new file mode 100644
+index 0000000..a82ac75
+--- /dev/null
++++ b/backend/src/api/comando_aerador.py
+@@ -0,0 +1,59 @@
++"""Comando do aerador: a API publica no mesmo broker da ingestao e o no sensor assina.
++
++Protocolo (o firmware precisa seguir o mesmo):
++- topico `<MQTT_TOPIC_PREFIX>/<mac sem separador, minusculo>/aerador`, irmao do `.../leituras`;
++- payload `{"acao": "ligar" | "desligar", "id": <id em acionamentos_atuador>, "ts": <epoch UTC>}`;
++- QoS 1 e **retido**: o broker guarda o ultimo comando, e o no que reinicia ou volta de uma
++  queda de rede recebe o estado pedido assim que assina o topico.
++"""
++
++import json
++import logging
++import uuid
++
++import paho.mqtt.client as mqtt
++
++logger = logging.getLogger(__name__)
++
++# tempo para o broker confirmar o QoS 1 (PUBACK) antes de a API desistir
++TEMPO_LIMITE_S = 5.0
++
++
++def topico_aerador(prefixo: str, mac: str) -> str:
++    # mesmo formato do mac no topico de leituras (macLimpo() no firmware)
++    return f"{prefixo}/{mac.replace(':', '').lower()}/aerador"
++
++
++class PublicadorMqtt:
++    def __init__(self, broker_host: str, broker_port: int, topico_prefixo: str) -> None:
++        self._broker_host = broker_host
++        self._broker_port = broker_port
++        self._prefixo = topico_prefixo
++        # id proprio por processo, para nao derrubar a conexao da ingestao nem de outra API
++        self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"api-painel-{uuid.uuid4().hex[:8]}")
++
++    def iniciar(self) -> None:
++        # conecta em segundo plano; o paho reconecta sozinho se o broker cair
++        self._client.connect_async(self._broker_host, self._broker_port)
++        self._client.loop_start()
++        logger.info("publicador de comandos ligado ao broker %s:%s", self._broker_host, self._broker_port)
++
++    def parar(self) -> None:
++        self._client.disconnect()
++        self._client.loop_stop()
++
++    def publicar_aerador(self, mac: str, acao: str, id_acionamento: int, ts: int) -> bool:
++        """True quando o broker confirmou o recebimento (PUBACK); nao confirma que o no executou."""
++        if not self._client.is_connected():
++            logger.warning("comando do aerador nao enviado: sem conexao com o broker")
++            return False
++        topico = topico_aerador(self._prefixo, mac)
++        mensagem = self._client.publish(
++            topico, json.dumps({"acao": acao, "id": id_acionamento, "ts": ts}), qos=1, retain=True
++        )
++        try:
++            mensagem.wait_for_publish(TEMPO_LIMITE_S)
++        except (RuntimeError, ValueError):
++            logger.exception("falha ao publicar em %s", topico)
++            return False
++        return mensagem.is_published()
+diff --git a/backend/src/api/config.py b/backend/src/api/config.py
+new file mode 100644
+index 0000000..46479cc
+--- /dev/null
++++ b/backend/src/api/config.py
+@@ -0,0 +1,21 @@
++from pydantic import Field
++from pydantic_settings import BaseSettings, SettingsConfigDict
++
++
++class ConfigApi(BaseSettings):
++    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
++
++    # segredo que assina os tokens (RNF05: credenciais em variaveis de ambiente).
++    # Gerar com: python -c "import secrets; print(secrets.token_urlsafe(48))"
++    api_jwt_segredo: str = Field(min_length=32)
++    api_host: str = "127.0.0.1"
++    api_porta: int = 8000
++    api_acesso_minutos: int = 15
++    # sem "lembrar de mim" o cookie morre com o navegador, e o token vale no maximo isso
++    api_renovacao_horas: int = 12
++    api_renovacao_dias_lembrar: int = 30
++    # o navegador aceita cookie Secure em http://localhost; so desligar em teste por IP da rede
++    api_cookie_seguro: bool = True
++
++    # mesmo limiar do servico de ML (ML_CONFIANCA_MIN no .env do ml/)
++    ml_confianca_min: float = 0.5
+diff --git a/backend/src/api/dependencias.py b/backend/src/api/dependencias.py
+new file mode 100644
+index 0000000..7902eee
+--- /dev/null
++++ b/backend/src/api/dependencias.py
+@@ -0,0 +1,57 @@
++from collections.abc import Iterator
++from typing import Annotated
++
++from fastapi import Depends, HTTPException, Request
++from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
++from sqlalchemy.orm import Session
++
++from src.api.comando_aerador import PublicadorMqtt
++from src.api.config import ConfigApi
++from src.api.seguranca import ACESSO, ler_token
++from src.db.models import Usuario
++
++
++def obter_sessao(request: Request) -> Iterator[Session]:
++    with request.app.state.fabrica_sessao() as sessao:
++        yield sessao
++
++
++def obter_config(request: Request) -> ConfigApi:
++    return request.app.state.config
++
++
++def obter_publicador(request: Request) -> PublicadorMqtt:
++    return request.app.state.publicador
++
++
++Sessao = Annotated[Session, Depends(obter_sessao)]
++Config = Annotated[ConfigApi, Depends(obter_config)]
++Publicador = Annotated[PublicadorMqtt, Depends(obter_publicador)]
++
++_bearer = HTTPBearer(auto_error=False)
++
++
++def usuario_atual(
++    sessao: Sessao,
++    config: Config,
++    credenciais: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
++) -> Usuario:
++    dados = ler_token(credenciais.credentials, ACESSO, config.api_jwt_segredo) if credenciais else None
++    usuario = sessao.get(Usuario, int(dados["sub"])) if dados else None
++    if usuario is None:
++        # o front renova a sessao uma vez pelo cookie e, se falhar, volta ao login
++        raise HTTPException(401, "Sessão expirada. Entre novamente.", headers={"WWW-Authenticate": "Bearer"})
++    return usuario
++
++
++UsuarioAtual = Annotated[Usuario, Depends(usuario_atual)]
++
++
++def administrador(usuario: UsuarioAtual) -> Usuario:
++    # cadastros so para o perfil admin (UC01; decisao I-04 da auditoria do front)
++    if usuario.perfil != "admin":
++        raise HTTPException(403, "Acesso restrito a administradores.")
++    return usuario
++
++
++Administrador = Annotated[Usuario, Depends(administrador)]
+diff --git a/backend/src/api/esquemas.py b/backend/src/api/esquemas.py
+new file mode 100644
+index 0000000..3d45fe8
+--- /dev/null
++++ b/backend/src/api/esquemas.py
+@@ -0,0 +1,186 @@
++"""Formato das respostas, conforme docs/CONTRATO_API.md do front-end (Decimal sai como string)."""
++
++from datetime import date, datetime, timezone
++from decimal import Decimal
++from typing import Annotated, Literal
++
++from pydantic import AfterValidator, BaseModel, ConfigDict
++
++# sempre em UTC ("...Z"), qualquer que seja o fuso da sessao do banco
++DataHora = Annotated[datetime, AfterValidator(lambda d: d.astimezone(timezone.utc))]
++NivelRisco = Literal["otimo", "atencao", "critico"]
++Grandeza = Literal["ph", "temperatura", "turbidez", "od"]
++StatusConexao = Literal["online", "offline"]
++
++
++class _DoBanco(BaseModel):
++    model_config = ConfigDict(from_attributes=True)
++
++
++class UsuarioSaida(_DoBanco):
++    id: int
++    nome: str
++    email: str
++    telefone: str | None
++    perfil: Literal["admin", "operador"]
++
++
++class Token(BaseModel):
++    access_token: str
++    expira_em: DataHora
++
++
++class EspecieSaida(_DoBanco):
++    id: int
++    nome_comum: str
++    nome_cientifico: str
++    ph_min: Decimal
++    ph_max: Decimal
++    temp_min: Decimal
++    temp_max: Decimal
++    od_min: Decimal
++    od_max: Decimal
++
++
++class LeituraAtual(BaseModel):
++    grandeza: Grandeza
++    valor: Decimal
++    unidade: str
++    ts: DataHora
++    estimado: bool = False
++    baixa_confianca: bool = False
++
++
++class ResumoDispositivo(BaseModel):
++    id: int
++    nome: str
++    status_conexao: StatusConexao
++    ultima_leitura_em: DataHora | None
++
++
++class TanqueSaida(BaseModel):
++    id: int
++    nome: str
++    volume_litros: Decimal
++    quantidade_peixes: int
++    data_povoamento: date | None
++    status: Literal["ativo", "manutencao", "inativo"]
++    criado_em: DataHora
++    especie: EspecieSaida | None
++    nivel_risco: NivelRisco | None
++    ultima_leitura_em: DataHora | None
++    ultimas_leituras: list[LeituraAtual]
++    dispositivos: list[ResumoDispositivo]
++
++
++class SensorSaida(BaseModel):
++    id: int
++    grandeza: Grandeza
++    modelo: str
++    unidade: str
++    status: Literal["ativo", "inativo", "em_calibracao"]
++    data_instalacao: date
++
++
++class AcionamentoSaida(_DoBanco):
++    id: int
++    acao: Literal["ligar", "desligar"]
++    motivo: str | None
++    ts_acionamento: DataHora
++
++
++class UltimoAcionamento(AcionamentoSaida):
++    # automatico = disparado por uma previsao (id_previsao preenchido); manual = comando do painel
++    automatico: bool
++
++
++class DispositivoSaida(BaseModel):
++    id: int
++    id_tanque: int
++    nome: str
++    modelo_esp32: str
++    mac_address: str
++    versao_firmware: str | None
++    ip_local: str | None
++    status_conexao: StatusConexao
++    ultima_leitura_em: DataHora | None
++    data_cadastro: DataHora
++    sensores: list[SensorSaida]
++    # ultimo comando do aerador; o no ainda nao confirma o estado do rele
++    ultimo_acionamento: UltimoAcionamento | None
++
++
++class Ponto(BaseModel):
++    ts: DataHora
++    valor: Decimal
++    # so quando agregado; a rota omite os campos nulos
++    min: Decimal | None = None
++    max: Decimal | None = None
++
++
++class Serie(BaseModel):
++    grandeza: Grandeza
++    unidade: str
++    estimado: bool
++    pontos: list[Ponto]
++
++
++class Leituras(BaseModel):
++    id_tanque: int
++    bucket: Literal["raw", "5m", "1h"]
++    desde: DataHora
++    ate: DataHora
++    series: list[Serie]
++
++
++class PrevisaoSaida(_DoBanco):
++    id: int
++    parametro_critico: Grandeza
++    valor_previsto: Decimal
++    nivel_risco: NivelRisco
++    horizonte_h: int
++    confianca: Decimal | None
++    # o ML so define baixa confianca para o OD estimado (h = 0); nos horizontes a confianca
++    # e a probabilidade da classe prevista
++    baixa_confianca: bool = False
++    ts_previsao: DataHora
++
++
++class EstimativaOd(BaseModel):
++    valor: Decimal
++    nivel_risco: NivelRisco
++    confianca: Decimal | None
++    baixa_confianca: bool
++
++
++class PrevisaoAtual(BaseModel):
++    id_tanque: int
++    nivel_risco: NivelRisco | None
++    gerada_em: DataHora | None
++    od_atual: EstimativaOd | None
++    horizontes: list[PrevisaoSaida]
++
++
++class Pagina(BaseModel):
++    itens: list[dict]
++    total: int
++    pagina: int
++    por_pagina: int
++
++
++class EventoAcionamento(BaseModel):
++    tipo: Literal["acionamento"] = "acionamento"
++    id: str
++    id_tanque: int
++    tanque_nome: str
++    ocorrido_em: DataHora
++    acao: Literal["ligar", "desligar"]
++    automatico: bool
++    motivo: str | None
++
++
++class PaginaEventos(BaseModel):
++    itens: list[EventoAcionamento]
++    total: int
++    pagina: int
++    por_pagina: int
+diff --git a/backend/src/api/estado.py b/backend/src/api/estado.py
+new file mode 100644
+index 0000000..a7a4de0
+--- /dev/null
++++ b/backend/src/api/estado.py
+@@ -0,0 +1,140 @@
++"""Situacao atual de cada tanque, calculada de `leituras` (ingestao) e `previsoes` (servico de ML)."""
++
++from dataclasses import dataclass
++from datetime import datetime, timedelta
++from decimal import Decimal
++
++from sqlalchemy import func, select, true
++from sqlalchemy.orm import Session
++
++from src.api import faixas
++from src.db.models import Especie, Leitura, Previsao, Sensor, Tanque, TipoSensor
++
++# sem leitura ha mais de 5 min o no conta como offline (fluxo alternativo do UC02);
++# a ingestao nao atualiza dispositivos.status_conexao nem ultimo_heartbeat
++LIMITE_OFFLINE = timedelta(minutes=5)
++# 3 ciclos do servico de ML (ML_INTERVALO_S = 300): depois disso a previsao nao vale mais
++LIMITE_PREVISAO = timedelta(minutes=15)
++GRANDEZAS_FISICAS = ("ph", "temperatura", "turbidez")
++
++
++@dataclass(frozen=True)
++class UltimaLeitura:
++    id_tanque: int
++    id_dispositivo: int
++    grandeza: str
++    valor: Decimal
++    unidade: str
++    ts: datetime
++
++
++@dataclass(frozen=True)
++class SituacaoTanque:
++    leituras: dict[str, UltimaLeitura]
++    ultima_por_dispositivo: dict[int, datetime]
++    # linhas do ultimo ciclo do ML (h = 0..3), mesmo que antigo
++    ciclo: list[Previsao]
++    # o servico de ML so roda para tanque ativo e com especie
++    elegivel: bool
++    previsao_valida: bool
++    nivel_risco: str | None
++
++    @property
++    def od(self) -> Previsao | None:
++        return next((p for p in self.ciclo if p.horizonte_h == 0), None)
++
++    @property
++    def gerada_em(self) -> datetime | None:
++        return self.ciclo[0].ts_previsao if self.ciclo else None
++
++    @property
++    def ultima_leitura_em(self) -> datetime | None:
++        return max(self.ultima_por_dispositivo.values(), default=None)
++
++
++def status_conexao(ultima_leitura: datetime | None, agora: datetime) -> str:
++    return "online" if ultima_leitura is not None and agora - ultima_leitura <= LIMITE_OFFLINE else "offline"
++
++
++def ultimas_leituras(sessao: Session, ids_tanques: list[int]) -> list[UltimaLeitura]:
++    """Leitura mais recente de cada sensor dos tanques (usa o indice ix_leituras_sensor_ts)."""
++    ultima = (
++        select(Leitura.valor, Leitura.unidade, Leitura.ts)
++        .where(Leitura.id_sensor == Sensor.id)
++        .order_by(Leitura.ts.desc())
++        .limit(1)
++        .lateral()
++    )
++    linhas = sessao.execute(
++        select(
++            Sensor.id_tanque, Sensor.id_dispositivo, TipoSensor.grandeza, ultima.c.valor, ultima.c.unidade, ultima.c.ts
++        )
++        .join(TipoSensor, TipoSensor.id == Sensor.id_tipo)
++        .join(ultima, true())
++        .where(Sensor.id_tanque.in_(ids_tanques))
++    ).all()
++    return [UltimaLeitura(*linha) for linha in linhas]
++
++
++def ultimos_ciclos(sessao: Session, ids_tanques: list[int]) -> dict[int, list[Previsao]]:
++    """As 4 linhas que o servico de ML grava por ciclo compartilham o mesmo ts_previsao."""
++    ultimo = (
++        select(Previsao.id_tanque, func.max(Previsao.ts_previsao).label("ts"))
++        .where(Previsao.id_tanque.in_(ids_tanques))
++        .group_by(Previsao.id_tanque)
++        .subquery()
++    )
++    previsoes = sessao.scalars(
++        select(Previsao)
++        .join(ultimo, (ultimo.c.id_tanque == Previsao.id_tanque) & (ultimo.c.ts == Previsao.ts_previsao))
++        .order_by(Previsao.horizonte_h)
++    ).all()
++    ciclos: dict[int, list[Previsao]] = {}
++    for previsao in previsoes:
++        ciclos.setdefault(previsao.id_tanque, []).append(previsao)
++    return ciclos
++
++
++def _nivel_atual(leituras: dict[str, UltimaLeitura], od: Previsao, especie: Especie) -> str:
++    # pior entre pH e temperatura da ultima leitura e o OD estimado (nivel_geral do ML);
++    # o nivel do OD e o que o ML gravou, a API nao reclassifica
++    niveis = [od.nivel_risco] + [
++        faixas.nivel(float(leituras[g].valor), g, especie) for g in ("ph", "temperatura") if g in leituras
++    ]
++    return faixas.pior(*niveis)
++
++
++def carregar_situacoes(
++    sessao: Session, tanques: list[Tanque], especies: dict[int, Especie], agora: datetime
++) -> dict[int, SituacaoTanque]:
++    ids = [t.id for t in tanques]
++    leituras_por_tanque: dict[int, list[UltimaLeitura]] = {}
++    for leitura in ultimas_leituras(sessao, ids):
++        leituras_por_tanque.setdefault(leitura.id_tanque, []).append(leitura)
++    ciclos = ultimos_ciclos(sessao, ids)
++
++    situacoes = {}
++    for tanque in tanques:
++        mais_recentes: dict[str, UltimaLeitura] = {}
++        por_dispositivo: dict[int, datetime] = {}
++        for leitura in leituras_por_tanque.get(tanque.id, []):
++            atual = mais_recentes.get(leitura.grandeza)
++            if atual is None or leitura.ts > atual.ts:
++                mais_recentes[leitura.grandeza] = leitura
++            anterior = por_dispositivo.get(leitura.id_dispositivo, leitura.ts)
++            por_dispositivo[leitura.id_dispositivo] = max(leitura.ts, anterior)
++
++        especie = especies.get(tanque.id_especie) if tanque.id_especie is not None else None
++        ciclo = ciclos.get(tanque.id, [])
++        elegivel = tanque.status == "ativo" and especie is not None
++        od = next((p for p in ciclo if p.horizonte_h == 0), None)
++        valida = elegivel and od is not None and agora - od.ts_previsao <= LIMITE_PREVISAO
++        situacoes[tanque.id] = SituacaoTanque(
++            leituras=mais_recentes,
++            ultima_por_dispositivo=por_dispositivo,
++            ciclo=ciclo,
++            elegivel=elegivel,
++            previsao_valida=valida,
++            nivel_risco=_nivel_atual(mais_recentes, od, especie) if valida else None,
++        )
++    return situacoes
+diff --git a/backend/src/api/faixas.py b/backend/src/api/faixas.py
+new file mode 100644
+index 0000000..52d4cd7
+--- /dev/null
++++ b/backend/src/api/faixas.py
+@@ -0,0 +1,34 @@
++"""Regra de faixas do servico de ML (ml/src/faixas.py, correcao de 30/09), em versao escalar.
++
++A API nao inventa classificacao: o nivel do OD vem pronto do ML (linha h = 0).
++Esta regra so classifica o pH e a temperatura da ultima leitura, para compor o
++nivel atual do tanque como o `nivel_geral` do ML (pior entre pH, temperatura e OD).
++"""
++
++from src.db.models import Especie
++
++NIVEIS = ("otimo", "atencao", "critico")
++MARGEM_RELATIVA = 0.10
++
++
++def _limites(grandeza: str, especie: Especie) -> tuple[float, float]:
++    if grandeza == "ph":
++        return float(especie.ph_min), float(especie.ph_max)
++    if grandeza == "temperatura":
++        return float(especie.temp_min), float(especie.temp_max)
++    # o OD tem regra propria (sem limite de cima) e chega classificado pelo ML
++    raise ValueError(f"grandeza sem classificacao na API: {grandeza}")
++
++
++def nivel(valor: float, grandeza: str, especie: Especie) -> str:
++    minimo, maximo = _limites(grandeza, especie)
++    margem = MARGEM_RELATIVA * (maximo - minimo)
++    if valor < minimo or valor > maximo:
++        return "critico"
++    if minimo + margem <= valor <= maximo - margem:
++        return "otimo"
++    return "atencao"
++
++
++def pior(*niveis: str) -> str:
++    return max(niveis, key=NIVEIS.index)
+diff --git a/backend/src/api/rotas/__init__.py b/backend/src/api/rotas/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/src/api/rotas/aerador.py b/backend/src/api/rotas/aerador.py
+new file mode 100644
+index 0000000..eb5cff5
+--- /dev/null
++++ b/backend/src/api/rotas/aerador.py
+@@ -0,0 +1,52 @@
++"""Comando manual do aerador pelo painel (F-02 do Figma).
++
++Qualquer usuario autenticado pode ligar ou desligar: quem cuida do tanque age na emergencia.
++O acionamento e registrado em acionamentos_atuador e publicado no broker (ver comando_aerador.py).
++A resposta e 202: o broker recebeu o comando, mas o no ainda nao confirma que o rele mudou.
++"""
++
++from datetime import datetime, timezone
++from typing import Literal
++
++from fastapi import APIRouter, HTTPException
++from pydantic import BaseModel
++
++from src.api.dependencias import Publicador, Sessao, UsuarioAtual
++from src.api.esquemas import AcionamentoSaida
++from src.db.models import AcionamentoAtuador, Dispositivo
++
++router = APIRouter(tags=["aerador"])
++
++TAMANHO_MOTIVO = 160  # VARCHAR(160) em acionamentos_atuador
++
++
++class ComandoAerador(BaseModel):
++    acao: Literal["ligar", "desligar"]
++
++
++@router.post("/dispositivos/{id_dispositivo}/aerador", status_code=202, response_model=AcionamentoSaida)
++def comandar_aerador(
++    id_dispositivo: int, dados: ComandoAerador, usuario: UsuarioAtual, sessao: Sessao, publicador: Publicador
++) -> AcionamentoAtuador:
++    dispositivo = sessao.get(Dispositivo, id_dispositivo)
++    if dispositivo is None:
++        raise HTTPException(404, "Dispositivo não encontrado.")
++
++    agora = datetime.now(timezone.utc)
++    acionamento = AcionamentoAtuador(
++        id_dispositivo=dispositivo.id,
++        id_tanque=dispositivo.id_tanque,
++        id_previsao=None,
++        acao=dados.acao,
++        motivo=f"Comando manual de {usuario.nome} pelo painel."[:TAMANHO_MOTIVO],
++        ts_acionamento=agora,
++    )
++    sessao.add(acionamento)
++    sessao.flush()  # o id do acionamento vai no payload, para o no registrar qual comando cumpriu
++
++    if not publicador.publicar_aerador(dispositivo.mac_address, dados.acao, acionamento.id, int(agora.timestamp())):
++        # sem confirmacao do broker o comando nao saiu: nao fica registro de um acionamento que nao houve
++        sessao.rollback()
++        raise HTTPException(503, "Não foi possível enviar o comando ao nó sensor. Tente novamente em instantes.")
++    sessao.commit()
++    return acionamento
+diff --git a/backend/src/api/rotas/alertas.py b/backend/src/api/rotas/alertas.py
+new file mode 100644
+index 0000000..860bef4
+--- /dev/null
++++ b/backend/src/api/rotas/alertas.py
+@@ -0,0 +1,51 @@
++"""Alertas e eventos (UC04, UC07).
++
++O sub-projeto 4 (N8N/WhatsApp) ainda nao grava alertas, entao a lista de alertas vem vazia:
++o painel mostra o estado vazio, sem erro. Os filtros do contrato sao aceitos e ignorados.
++Os eventos ja trazem os acionamentos do aerador; os alertas entram quando existirem.
++"""
++
++from typing import Annotated
++
++from fastapi import APIRouter, Depends, Query
++from sqlalchemy import func, select
++
++from src.api.dependencias import Sessao, usuario_atual
++from src.api.esquemas import EventoAcionamento, Pagina, PaginaEventos
++from src.db.models import AcionamentoAtuador, Tanque
++
++router = APIRouter(tags=["alertas"], dependencies=[Depends(usuario_atual)])
++
++NumeroPagina = Annotated[int, Query(ge=1)]
++PorPagina = Annotated[int, Query(ge=1, le=50)]
++
++
++@router.get("/alertas", response_model=Pagina)
++def listar_alertas(pagina: NumeroPagina = 1, por_pagina: PorPagina = 10) -> Pagina:
++    return Pagina(itens=[], total=0, pagina=pagina, por_pagina=por_pagina)
++
++
++@router.get("/eventos", response_model=PaginaEventos)
++def listar_eventos(sessao: Sessao, pagina: NumeroPagina = 1, por_pagina: PorPagina = 10) -> PaginaEventos:
++    total = sessao.scalar(select(func.count()).select_from(AcionamentoAtuador))
++    linhas = sessao.execute(
++        select(AcionamentoAtuador, Tanque.nome)
++        .join(Tanque, Tanque.id == AcionamentoAtuador.id_tanque)
++        .order_by(AcionamentoAtuador.ts_acionamento.desc(), AcionamentoAtuador.id.desc())
++        .offset((pagina - 1) * por_pagina)
++        .limit(por_pagina)
++    ).all()
++    itens = [
++        EventoAcionamento(
++            id=f"acionamento-{a.id}",
++            id_tanque=a.id_tanque,
++            tanque_nome=nome,
++            ocorrido_em=a.ts_acionamento,
++            acao=a.acao,
++            # disparado por uma previsao = automatico; comando do painel = manual
++            automatico=a.id_previsao is not None,
++            motivo=a.motivo,
++        )
++        for a, nome in linhas
++    ]
++    return PaginaEventos(itens=itens, total=total, pagina=pagina, por_pagina=por_pagina)
+diff --git a/backend/src/api/rotas/autenticacao.py b/backend/src/api/rotas/autenticacao.py
+new file mode 100644
+index 0000000..d4d32cb
+--- /dev/null
++++ b/backend/src/api/rotas/autenticacao.py
+@@ -0,0 +1,128 @@
++"""Login com JWT (RNF05): access token no corpo, refresh token em cookie HttpOnly."""
++
++import re
++from datetime import timedelta
++from typing import Annotated
++
++from fastapi import APIRouter, Cookie, HTTPException, Response
++from fastapi.responses import JSONResponse
++from pydantic import BaseModel, field_validator
++from pydantic_core import PydanticCustomError
++from sqlalchemy import func, select
++
++from src.api.config import ConfigApi
++from src.api.dependencias import Config, Sessao, UsuarioAtual
++from src.api.esquemas import Token, UsuarioSaida
++from src.api.seguranca import ACESSO, HASH_FICTICIO, RENOVACAO, emitir_token, ler_token, verificar_senha
++from src.db.models import Usuario
++
++router = APIRouter(prefix="/auth", tags=["autenticacao"])
++
++COOKIE_RENOVACAO = "renovacao"
++# o cookie so viaja para as rotas de autenticacao
++CAMINHO_COOKIE = "/api/v1/auth"
++# formato que o front envia (+55, DDD e numero): e o que o N8N/Evolution API usa no UC04
++REGEX_TELEFONE = re.compile(r"^\+55\d{10,11}$")
++
++
++class DadosLogin(BaseModel):
++    email: str
++    senha: str
++    lembrar: bool = False
++
++
++class DadosConta(BaseModel):
++    nome: str
++    telefone: str | None = None
++
++    @field_validator("nome")
++    @classmethod
++    def _nome(cls, valor: str) -> str:
++        valor = valor.strip()
++        if not valor:
++            raise PydanticCustomError("nome_vazio", "Informe seu nome.")
++        if len(valor) > 120:
++            raise PydanticCustomError("nome_longo", "Use no máximo 120 caracteres.")
++        return valor
++
++    @field_validator("telefone")
++    @classmethod
++    def _telefone(cls, valor: str | None) -> str | None:
++        if not valor:
++            return None
++        if not REGEX_TELEFONE.match(valor):
++            raise PydanticCustomError("telefone_invalido", "Informe DDD e número, como (11) 98765-4321.")
++        return valor
++
++
++def _token_de_acesso(id_usuario: int, config: ConfigApi) -> Token:
++    token, expira_em = emitir_token(
++        id_usuario, ACESSO, timedelta(minutes=config.api_acesso_minutos), config.api_jwt_segredo
++    )
++    return Token(access_token=token, expira_em=expira_em)
++
++
++def _apagar_cookie(resposta: Response, config: ConfigApi) -> None:
++    resposta.delete_cookie(
++        COOKIE_RENOVACAO, path=CAMINHO_COOKIE, secure=config.api_cookie_seguro, httponly=True, samesite="strict"
++    )
++
++
++@router.post("/login", response_model=Token)
++def entrar(dados: DadosLogin, resposta: Response, sessao: Sessao, config: Config) -> Token:
++    usuario = sessao.scalar(select(Usuario).where(func.lower(Usuario.email) == dados.email.strip().lower()))
++    senha_confere = verificar_senha(dados.senha, usuario.senha_hash if usuario else HASH_FICTICIO)
++    if usuario is None or not senha_confere:
++        raise HTTPException(401, "E-mail ou senha incorretos.")
++
++    validade = (
++        timedelta(days=config.api_renovacao_dias_lembrar)
++        if dados.lembrar
++        else timedelta(hours=config.api_renovacao_horas)
++    )
++    renovacao, _ = emitir_token(usuario.id, RENOVACAO, validade, config.api_jwt_segredo)
++    resposta.set_cookie(
++        COOKIE_RENOVACAO,
++        renovacao,
++        # sem "lembrar de mim" o cookie e de sessao: some quando o navegador fecha
++        max_age=int(validade.total_seconds()) if dados.lembrar else None,
++        path=CAMINHO_COOKIE,
++        secure=config.api_cookie_seguro,
++        httponly=True,
++        samesite="strict",
++    )
++    return _token_de_acesso(usuario.id, config)
++
++
++@router.post("/refresh", response_model=Token)
++def renovar(
++    sessao: Sessao, config: Config, renovacao: Annotated[str | None, Cookie()] = None
++) -> Token | JSONResponse:
++    dados = ler_token(renovacao, RENOVACAO, config.api_jwt_segredo) if renovacao else None
++    usuario = sessao.get(Usuario, int(dados["sub"])) if dados else None
++    if usuario is None:
++        resposta = JSONResponse({"detail": "Sessão expirada. Entre novamente."}, status_code=401)
++        _apagar_cookie(resposta, config)
++        return resposta
++    return _token_de_acesso(usuario.id, config)
++
++
++@router.post("/logout", status_code=204)
++def sair(config: Config) -> Response:
++    # tokens sem estado no servidor: sair e apagar o cookie; o access token expira sozinho
++    resposta = Response(status_code=204)
++    _apagar_cookie(resposta, config)
++    return resposta
++
++
++@router.get("/eu", response_model=UsuarioSaida)
++def eu(usuario: UsuarioAtual) -> Usuario:
++    return usuario
++
++
++@router.patch("/eu", response_model=UsuarioSaida)
++def atualizar_conta(dados: DadosConta, usuario: UsuarioAtual, sessao: Sessao) -> Usuario:
++    usuario.nome = dados.nome
++    usuario.telefone = dados.telefone
++    sessao.commit()
++    return usuario
+diff --git a/backend/src/api/rotas/cadastro.py b/backend/src/api/rotas/cadastro.py
+new file mode 100644
+index 0000000..b09026d
+--- /dev/null
++++ b/backend/src/api/rotas/cadastro.py
+@@ -0,0 +1,287 @@
++"""Cadastro de tanques, dispositivos e sensores (UC01), so para administradores.
++
++Regras do UC01 e das decisoes registradas na auditoria do front (docs/AUDITORIA_FRONTEND.md):
++- o tanque e o dispositivo opcional sao gravados na mesma transacao;
++- o dispositivo nasce com os 3 sensores do no (pH, temperatura, turbidez); sem eles a
++  ingestao descarta as leituras (I-07);
++- MAC no formato que a ingestao grava e procura (aa:bb:cc:dd:ee:ff); repetido da 409;
++- nao ha exclusao: o tanque passa a "inativo" e o historico fica (I-08).
++"""
++
++import ipaddress
++import re
++from contextlib import contextmanager
++from datetime import date, datetime, timezone
++from decimal import Decimal
++from typing import Literal
++
++from fastapi import APIRouter, HTTPException
++from pydantic import BaseModel, field_validator
++from pydantic_core import PydanticCustomError
++from sqlalchemy import func, select
++from sqlalchemy.exc import IntegrityError
++
++from src.api.dependencias import Administrador, Config, Sessao
++from src.api.esquemas import DispositivoSaida, SensorSaida, TanqueSaida
++from src.api.rotas.tanques import montar_dispositivos, montar_tanques, sensor_saida, tanque_ou_404
++from src.db.models import Dispositivo, Especie, Sensor, Tanque, TipoSensor
++from src.db.seed import TIPOS_SENSOR_PADRAO
++
++router = APIRouter(tags=["cadastro"])
++
++# aceita aa:bb:cc:dd:ee:ff, com hifen ou sem separador, como o formulario do front
++REGEX_MAC = re.compile(r"^([0-9a-f]{2}[:-]?){5}[0-9a-f]{2}$", re.IGNORECASE)
++VOLUME_MAXIMO = Decimal("999999.99")  # NUMERIC(8,2)
++QUANTIDADE_MAXIMA = 2_147_483_647  # INTEGER
++MODELO_PADRAO = "ESP32 DevKitC V4"  # default da coluna no DDL
++MAC_REPETIDO = "Este endereço MAC já está cadastrado em outro dispositivo."
++
++
++def _texto(valor: str | None, maximo: int, obrigatorio: str | None = None) -> str | None:
++    valor = (valor or "").strip()
++    if not valor:
++        if obrigatorio:
++            raise PydanticCustomError("obrigatorio", obrigatorio)
++        return None
++    if len(valor) > maximo:
++        raise PydanticCustomError("texto_longo", f"Use no máximo {maximo} caracteres.")
++    return valor
++
++
++def normalizar_mac(valor: str) -> str:
++    # mesmo formato de LeituraMqttPayload.mac_com_separador, que a ingestao usa para achar o no
++    hexa = re.sub(r"[:-]", "", valor).lower()
++    return ":".join(hexa[i : i + 2] for i in range(0, 12, 2))
++
++
++class DadosTanque(BaseModel):
++    nome: str
++    id_especie: int
++    volume_litros: Decimal
++    quantidade_peixes: int
++    data_povoamento: date | None = None
++    status: Literal["ativo", "manutencao", "inativo"] = "ativo"
++
++    @field_validator("nome")
++    @classmethod
++    def _nome(cls, valor: str) -> str:
++        return _texto(valor, 120, "Informe o nome do tanque.")
++
++    @field_validator("volume_litros")
++    @classmethod
++    def _volume(cls, valor: Decimal) -> Decimal:
++        if valor <= 0:
++            raise PydanticCustomError("volume_invalido", "O volume deve ser maior que zero.")
++        if valor > VOLUME_MAXIMO:
++            raise PydanticCustomError("volume_invalido", "Volume acima do limite permitido.")
++        return valor
++
++    @field_validator("quantidade_peixes")
++    @classmethod
++    def _quantidade(cls, valor: int) -> int:
++        if valor < 0:
++            raise PydanticCustomError("quantidade_invalida", "A quantidade não pode ser negativa.")
++        if valor > QUANTIDADE_MAXIMA:
++            raise PydanticCustomError("quantidade_invalida", "Quantidade acima do limite permitido.")
++        return valor
++
++    @field_validator("data_povoamento")
++    @classmethod
++    def _data(cls, valor: date | None) -> date | None:
++        # comparado com a data em UTC, que nunca fica atras da data no Brasil
++        if valor is not None and valor > datetime.now(timezone.utc).date():
++            raise PydanticCustomError("data_futura", "A data não pode estar no futuro.")
++        return valor
++
++
++class DadosDispositivo(BaseModel):
++    nome: str
++    mac_address: str
++    modelo_esp32: str | None = None
++    versao_firmware: str | None = None
++    ip_local: str | None = None
++
++    @field_validator("nome")
++    @classmethod
++    def _nome(cls, valor: str) -> str:
++        return _texto(valor, 120, "Informe o nome do dispositivo.")
++
++    @field_validator("mac_address")
++    @classmethod
++    def _mac(cls, valor: str) -> str:
++        valor = _texto(valor, 17, "Informe o endereço MAC do ESP32.")
++        if not REGEX_MAC.match(valor):
++            raise PydanticCustomError("mac_invalido", "Use o formato AA:BB:CC:DD:EE:FF.")
++        return normalizar_mac(valor)
++
++    @field_validator("modelo_esp32")
++    @classmethod
++    def _modelo(cls, valor: str | None) -> str | None:
++        return _texto(valor, 60)
++
++    @field_validator("versao_firmware")
++    @classmethod
++    def _firmware(cls, valor: str | None) -> str | None:
++        return _texto(valor, 30)
++
++    @field_validator("ip_local")
++    @classmethod
++    def _ip(cls, valor: str | None) -> str | None:
++        valor = _texto(valor, 45)
++        if valor is None:
++            return None
++        try:
++            return str(ipaddress.ip_address(valor))
++        except ValueError:
++            raise PydanticCustomError("ip_invalido", "Informe um IP válido, como 192.168.0.20.") from None
++
++
++class NovoTanque(DadosTanque):
++    dispositivo: DadosDispositivo | None = None
++
++
++class NovoDispositivo(DadosDispositivo):
++    id_tanque: int
++
++
++class DadosSensor(BaseModel):
++    status: Literal["ativo", "inativo", "em_calibracao"]
++
++
++def _erro_de_campo(status: int, caminho: list[str], mensagem: str) -> HTTPException:
++    # mesmo formato dos erros de validacao do FastAPI, para o front marcar o campo
++    tipo = "conflict" if status == 409 else "value_error"
++    return HTTPException(status, [{"loc": ["body", *caminho], "msg": mensagem, "type": tipo}])
++
++
++def _checar_especie(sessao, id_especie: int) -> None:
++    if sessao.get(Especie, id_especie) is None:
++        raise _erro_de_campo(422, ["id_especie"], "Selecione uma espécie do catálogo.")
++
++
++def _checar_mac(sessao, mac: str, caminho: list[str], ignorar_id: int | None = None) -> None:
++    existente = sessao.scalar(select(Dispositivo.id).where(func.lower(Dispositivo.mac_address) == mac))
++    if existente is not None and existente != ignorar_id:
++        raise _erro_de_campo(409, caminho, MAC_REPETIDO)
++
++
++@contextmanager
++def _transacao(sessao, caminho_mac: list[str]):
++    try:
++        yield
++        sessao.commit()
++    except IntegrityError as erro:
++        sessao.rollback()
++        # outra requisicao gravou o mesmo MAC entre a checagem e o INSERT. O nome da restricao
++        # muda (uq_disp_mac no DDL, outro no banco de teste); o detalhe sempre cita a coluna
++        detalhe = getattr(getattr(erro.orig, "diag", None), "message_detail", None) or ""
++        if "(mac_address)" in detalhe:
++            raise _erro_de_campo(409, caminho_mac, MAC_REPETIDO) from None
++        raise
++
++
++def _tipos_do_no(sessao) -> list[TipoSensor]:
++    # os sensores fisicos do no sao os do catalogo do seed; o que faltar e criado como o seed faz
++    tipos = []
++    for dados in TIPOS_SENSOR_PADRAO:
++        tipo = sessao.scalar(select(TipoSensor).where(TipoSensor.modelo == dados["modelo"]))
++        if tipo is None:
++            tipo = TipoSensor(**dados)
++            sessao.add(tipo)
++        tipos.append(tipo)
++    sessao.flush()
++    return tipos
++
++
++def _criar_dispositivo(sessao, dados: DadosDispositivo, id_tanque: int) -> Dispositivo:
++    dispositivo = Dispositivo(
++        id_tanque=id_tanque,
++        nome=dados.nome,
++        modelo_esp32=dados.modelo_esp32 or MODELO_PADRAO,
++        mac_address=dados.mac_address,
++        versao_firmware=dados.versao_firmware,
++        ip_local=dados.ip_local,
++        status_conexao="offline",
++        ultimo_heartbeat=None,
++        data_cadastro=datetime.now(timezone.utc),
++    )
++    sessao.add(dispositivo)
++    sessao.flush()
++    for tipo in _tipos_do_no(sessao):
++        sessao.add(
++            Sensor(
++                id_dispositivo=dispositivo.id,
++                id_tipo=tipo.id,
++                id_tanque=id_tanque,
++                data_instalacao=date.today(),
++                status="ativo",
++            )
++        )
++    return dispositivo
++
++
++@router.post("/tanques", status_code=201, response_model=TanqueSaida)
++def criar_tanque(dados: NovoTanque, admin: Administrador, sessao: Sessao, config: Config) -> TanqueSaida:
++    _checar_especie(sessao, dados.id_especie)
++    if dados.dispositivo is not None:
++        _checar_mac(sessao, dados.dispositivo.mac_address, ["dispositivo", "mac_address"])
++
++    tanque = Tanque(
++        id_usuario=admin.id, criado_em=datetime.now(timezone.utc), **dados.model_dump(exclude={"dispositivo"})
++    )
++    with _transacao(sessao, ["dispositivo", "mac_address"]):
++        sessao.add(tanque)
++        sessao.flush()
++        if dados.dispositivo is not None:
++            _criar_dispositivo(sessao, dados.dispositivo, tanque.id)
++    return montar_tanques(sessao, [tanque], config)[0]
++
++
++@router.patch("/tanques/{id_tanque}", response_model=TanqueSaida)
++def atualizar_tanque(
++    id_tanque: int, dados: DadosTanque, _: Administrador, sessao: Sessao, config: Config
++) -> TanqueSaida:
++    tanque = tanque_ou_404(sessao, id_tanque)
++    _checar_especie(sessao, dados.id_especie)
++    for campo, valor in dados.model_dump().items():
++        setattr(tanque, campo, valor)
++    sessao.commit()
++    return montar_tanques(sessao, [tanque], config)[0]
++
++
++@router.post("/dispositivos", status_code=201, response_model=DispositivoSaida)
++def criar_dispositivo(dados: NovoDispositivo, _: Administrador, sessao: Sessao) -> DispositivoSaida:
++    if sessao.get(Tanque, dados.id_tanque) is None:
++        raise _erro_de_campo(422, ["id_tanque"], "Tanque não encontrado.")
++    _checar_mac(sessao, dados.mac_address, ["mac_address"])
++    with _transacao(sessao, ["mac_address"]):
++        dispositivo = _criar_dispositivo(sessao, dados, dados.id_tanque)
++    return montar_dispositivos(sessao, [dispositivo])[0]
++
++
++@router.patch("/dispositivos/{id_dispositivo}", response_model=DispositivoSaida)
++def atualizar_dispositivo(
++    id_dispositivo: int, dados: DadosDispositivo, _: Administrador, sessao: Sessao
++) -> DispositivoSaida:
++    dispositivo = sessao.get(Dispositivo, id_dispositivo)
++    if dispositivo is None:
++        raise HTTPException(404, "Dispositivo não encontrado.")
++    _checar_mac(sessao, dados.mac_address, ["mac_address"], ignorar_id=dispositivo.id)
++    with _transacao(sessao, ["mac_address"]):
++        dispositivo.nome = dados.nome
++        dispositivo.mac_address = dados.mac_address
++        dispositivo.modelo_esp32 = dados.modelo_esp32 or dispositivo.modelo_esp32
++        dispositivo.versao_firmware = dados.versao_firmware
++        dispositivo.ip_local = dados.ip_local
++    return montar_dispositivos(sessao, [dispositivo])[0]
++
++
++@router.patch("/sensores/{id_sensor}", response_model=SensorSaida)
++def atualizar_sensor(id_sensor: int, dados: DadosSensor, _: Administrador, sessao: Sessao) -> SensorSaida:
++    sensor = sessao.get(Sensor, id_sensor)
++    if sensor is None:
++        raise HTTPException(404, "Sensor não encontrado.")
++    # o servico de ML so le sensores "ativo": pH ou temperatura fora disso deixa o tanque sem previsao
++    sensor.status = dados.status
++    sessao.commit()
++    return sensor_saida(sensor, sessao.get(TipoSensor, sensor.id_tipo))
+diff --git a/backend/src/api/rotas/catalogos.py b/backend/src/api/rotas/catalogos.py
+new file mode 100644
+index 0000000..644e597
+--- /dev/null
++++ b/backend/src/api/rotas/catalogos.py
+@@ -0,0 +1,13 @@
++from fastapi import APIRouter, Depends
++from sqlalchemy import select
++
++from src.api.dependencias import Sessao, usuario_atual
++from src.api.esquemas import EspecieSaida
++from src.db.models import Especie
++
++router = APIRouter(tags=["catalogos"], dependencies=[Depends(usuario_atual)])
++
++
++@router.get("/especies", response_model=list[EspecieSaida])
++def listar_especies(sessao: Sessao) -> list[Especie]:
++    return list(sessao.scalars(select(Especie).order_by(Especie.nome_comum)))
+diff --git a/backend/src/api/rotas/tanques.py b/backend/src/api/rotas/tanques.py
+new file mode 100644
+index 0000000..462052d
+--- /dev/null
++++ b/backend/src/api/rotas/tanques.py
+@@ -0,0 +1,277 @@
++"""Tanques, dispositivos, leituras e previsoes (UC02, UC03, UC06): consultas."""
++
++from datetime import datetime, timezone
++from typing import Literal
++
++from fastapi import APIRouter, Depends, HTTPException
++from sqlalchemy import select
++
++from src.api import series
++from src.api.dependencias import Config, Sessao, usuario_atual
++from src.api.esquemas import (
++    DispositivoSaida,
++    EspecieSaida,
++    EstimativaOd,
++    LeituraAtual,
++    Leituras,
++    PrevisaoAtual,
++    PrevisaoSaida,
++    ResumoDispositivo,
++    SensorSaida,
++    TanqueSaida,
++    UltimoAcionamento,
++)
++from src.api.estado import GRANDEZAS_FISICAS, SituacaoTanque, carregar_situacoes, status_conexao, ultimas_leituras
++from src.db.models import AcionamentoAtuador, Dispositivo, Especie, Sensor, Tanque, TipoSensor
++
++# leitura para qualquer usuario autenticado (decisao I-05 da auditoria do front: todos veem todos)
++router = APIRouter(tags=["tanques"], dependencies=[Depends(usuario_atual)])
++
++GRANDEZAS = (*GRANDEZAS_FISICAS, "od")
++
++
++def _agora() -> datetime:
++    return datetime.now(timezone.utc)
++
++
++def tanque_ou_404(sessao, id_tanque: int) -> Tanque:
++    tanque = sessao.get(Tanque, id_tanque)
++    if tanque is None:
++        raise HTTPException(404, "Tanque não encontrado.")
++    return tanque
++
++
++def _erro_de_consulta(campo: str, mensagem: str) -> HTTPException:
++    return HTTPException(422, [{"loc": ["query", campo], "msg": mensagem, "type": "value_error"}])
++
++
++def _especies(sessao) -> dict[int, Especie]:
++    return {e.id: e for e in sessao.scalars(select(Especie))}
++
++
++def _baixa_confianca(confianca, config) -> bool:
++    return confianca is not None and confianca < config.ml_confianca_min
++
++
++def _leituras_atuais(situacao: SituacaoTanque, config) -> list[LeituraAtual]:
++    # cada grandeza com o seu ts: sensor em falha publica null, a ingestao nao grava,
++    # e o painel mostra ha quanto tempo aquele sensor nao le
++    atuais = [
++        LeituraAtual(grandeza=leitura.grandeza, valor=leitura.valor, unidade=leitura.unidade, ts=leitura.ts)
++        for g in GRANDEZAS_FISICAS
++        if (leitura := situacao.leituras.get(g))
++    ]
++    od = situacao.od
++    if od is not None:
++        atuais.append(
++            LeituraAtual(
++                grandeza="od",
++                valor=od.valor_previsto,
++                unidade=series.UNIDADES_PADRAO["od"],
++                ts=od.ts_previsao,
++                estimado=True,
++                baixa_confianca=_baixa_confianca(od.confianca, config),
++            )
++        )
++    return atuais
++
++
++def montar_tanques(sessao, tanques: list[Tanque], config) -> list[TanqueSaida]:
++    agora = _agora()
++    especies = _especies(sessao)
++    situacoes = carregar_situacoes(sessao, tanques, especies, agora)
++    dispositivos: dict[int, list[Dispositivo]] = {}
++    for d in sessao.scalars(
++        select(Dispositivo).where(Dispositivo.id_tanque.in_([t.id for t in tanques])).order_by(Dispositivo.id)
++    ):
++        dispositivos.setdefault(d.id_tanque, []).append(d)
++
++    resultado = []
++    for t in tanques:
++        situacao = situacoes[t.id]
++        especie = especies.get(t.id_especie) if t.id_especie is not None else None
++        resultado.append(
++            TanqueSaida(
++                id=t.id,
++                nome=t.nome,
++                volume_litros=t.volume_litros,
++                quantidade_peixes=t.quantidade_peixes,
++                data_povoamento=t.data_povoamento,
++                status=t.status,
++                criado_em=t.criado_em,
++                especie=EspecieSaida.model_validate(especie) if especie else None,
++                nivel_risco=situacao.nivel_risco,
++                ultima_leitura_em=situacao.ultima_leitura_em,
++                ultimas_leituras=_leituras_atuais(situacao, config),
++                dispositivos=[
++                    ResumoDispositivo(
++                        id=d.id,
++                        nome=d.nome,
++                        status_conexao=status_conexao(situacao.ultima_por_dispositivo.get(d.id), agora),
++                        ultima_leitura_em=situacao.ultima_por_dispositivo.get(d.id),
++                    )
++                    for d in dispositivos.get(t.id, [])
++                ],
++            )
++        )
++    return resultado
++
++
++@router.get("/tanques", response_model=list[TanqueSaida])
++def listar_tanques(sessao: Sessao, config: Config) -> list[TanqueSaida]:
++    tanques = list(sessao.scalars(select(Tanque).order_by(Tanque.id)))
++    return montar_tanques(sessao, tanques, config)
++
++
++@router.get("/tanques/{id_tanque}", response_model=TanqueSaida)
++def buscar_tanque(id_tanque: int, sessao: Sessao, config: Config) -> TanqueSaida:
++    return montar_tanques(sessao, [tanque_ou_404(sessao, id_tanque)], config)[0]
++
++
++def sensor_saida(sensor: Sensor, tipo: TipoSensor) -> SensorSaida:
++    return SensorSaida(
++        id=sensor.id,
++        grandeza=tipo.grandeza,
++        modelo=tipo.modelo,
++        unidade=tipo.unidade,
++        status=sensor.status,
++        data_instalacao=sensor.data_instalacao,
++    )
++
++
++def ultimo_acionamento(acionamento: AcionamentoAtuador) -> UltimoAcionamento:
++    return UltimoAcionamento(
++        id=acionamento.id,
++        acao=acionamento.acao,
++        motivo=acionamento.motivo,
++        ts_acionamento=acionamento.ts_acionamento,
++        automatico=acionamento.id_previsao is not None,
++    )
++
++
++def montar_dispositivos(sessao, dispositivos: list[Dispositivo]) -> list[DispositivoSaida]:
++    agora = _agora()
++    sensores: dict[int, list[SensorSaida]] = {}
++    for sensor, tipo in sessao.execute(
++        select(Sensor, TipoSensor)
++        .join(TipoSensor, TipoSensor.id == Sensor.id_tipo)
++        .where(Sensor.id_dispositivo.in_([d.id for d in dispositivos]))
++        .order_by(Sensor.id)
++    ):
++        sensores.setdefault(sensor.id_dispositivo, []).append(sensor_saida(sensor, tipo))
++    ultima: dict[int, datetime] = {}
++    for leitura in ultimas_leituras(sessao, list({d.id_tanque for d in dispositivos})):
++        ultima[leitura.id_dispositivo] = max(leitura.ts, ultima.get(leitura.id_dispositivo, leitura.ts))
++    acionamentos = {
++        a.id_dispositivo: a
++        for a in sessao.scalars(
++            select(AcionamentoAtuador)
++            .where(AcionamentoAtuador.id_dispositivo.in_([d.id for d in dispositivos]))
++            .order_by(
++                AcionamentoAtuador.id_dispositivo,
++                AcionamentoAtuador.ts_acionamento.desc(),
++                AcionamentoAtuador.id.desc(),
++            )
++            .distinct(AcionamentoAtuador.id_dispositivo)
++        )
++    }
++
++    return [
++        DispositivoSaida(
++            id=d.id,
++            id_tanque=d.id_tanque,
++            nome=d.nome,
++            modelo_esp32=d.modelo_esp32,
++            mac_address=d.mac_address,
++            versao_firmware=d.versao_firmware,
++            ip_local=str(d.ip_local) if d.ip_local is not None else None,
++            status_conexao=status_conexao(ultima.get(d.id), agora),
++            ultima_leitura_em=ultima.get(d.id),
++            data_cadastro=d.data_cadastro,
++            sensores=sensores.get(d.id, []),
++            ultimo_acionamento=ultimo_acionamento(acionamentos[d.id]) if d.id in acionamentos else None,
++        )
++        for d in dispositivos
++    ]
++
++
++@router.get("/tanques/{id_tanque}/dispositivos", response_model=list[DispositivoSaida])
++def listar_dispositivos(id_tanque: int, sessao: Sessao) -> list[DispositivoSaida]:
++    tanque_ou_404(sessao, id_tanque)
++    dispositivos = sessao.scalars(
++        select(Dispositivo).where(Dispositivo.id_tanque == id_tanque).order_by(Dispositivo.id)
++    ).all()
++    return montar_dispositivos(sessao, list(dispositivos))
++
++
++@router.get("/tanques/{id_tanque}/leituras", response_model=Leituras, response_model_exclude_none=True)
++def buscar_leituras(
++    id_tanque: int,
++    desde: datetime,
++    ate: datetime,
++    sessao: Sessao,
++    bucket: Literal["raw", "5m", "1h"] = "raw",
++    grandezas: str | None = None,
++) -> Leituras:
++    # data sem fuso e lida como UTC
++    desde, ate = (d if d.tzinfo else d.replace(tzinfo=timezone.utc) for d in (desde, ate))
++    if desde >= ate:
++        raise _erro_de_consulta("desde", "O início do período deve ser anterior ao fim.")
++    if (ate - desde) / series.PASSOS[bucket] > series.MAX_PONTOS:
++        raise _erro_de_consulta("bucket", "Intervalo grande demais para esse agrupamento.")
++    pedidas = grandezas.split(",") if grandezas else list(GRANDEZAS)
++    if desconhecidas := set(pedidas) - set(GRANDEZAS):
++        raise _erro_de_consulta("grandezas", f"Grandeza desconhecida: {', '.join(sorted(desconhecidas))}.")
++    tanque_ou_404(sessao, id_tanque)
++
++    unidades = series.unidades_do_tanque(sessao, id_tanque)
++    return Leituras(
++        id_tanque=id_tanque,
++        bucket=bucket,
++        desde=desde,
++        ate=ate,
++        series=[
++            {
++                "grandeza": g,
++                "unidade": unidades[g],
++                "estimado": g == "od",
++                "pontos": (
++                    series.serie_od(sessao, id_tanque, desde, ate, bucket)
++                    if g == "od"
++                    else series.serie_fisica(sessao, id_tanque, g, desde, ate, bucket)
++                ),
++            }
++            for g in GRANDEZAS
++            if g in pedidas
++        ],
++    )
++
++
++@router.get("/tanques/{id_tanque}/previsoes/atual", response_model=PrevisaoAtual)
++def previsao_atual(id_tanque: int, sessao: Sessao, config: Config) -> PrevisaoAtual:
++    tanque = tanque_ou_404(sessao, id_tanque)
++    situacao = carregar_situacoes(sessao, [tanque], _especies(sessao), _agora())[tanque.id]
++    od = situacao.od
++    if not situacao.previsao_valida or od is None:
++        # indeterminado (o ML nao gravou) ou desatualizada: sem nivel nem horizontes. O gerada_em
++        # do ultimo ciclo fica para o painel dizer "desatualizada desde"; fora do escopo do ML
++        # (tanque nao ativo ou sem especie) vai nulo e o painel explica o motivo
++        return PrevisaoAtual(
++            id_tanque=tanque.id,
++            nivel_risco=None,
++            gerada_em=situacao.gerada_em if situacao.elegivel else None,
++            od_atual=None,
++            horizontes=[],
++        )
++    return PrevisaoAtual(
++        id_tanque=tanque.id,
++        nivel_risco=situacao.nivel_risco,
++        gerada_em=situacao.gerada_em,
++        od_atual=EstimativaOd(
++            valor=od.valor_previsto,
++            nivel_risco=od.nivel_risco,
++            confianca=od.confianca,
++            baixa_confianca=_baixa_confianca(od.confianca, config),
++        ),
++        horizontes=[PrevisaoSaida.model_validate(p) for p in situacao.ciclo if p.horizonte_h > 0],
++    )
+diff --git a/backend/src/api/seguranca.py b/backend/src/api/seguranca.py
+new file mode 100644
+index 0000000..a30747a
+--- /dev/null
++++ b/backend/src/api/seguranca.py
+@@ -0,0 +1,56 @@
++import hashlib
++import hmac
++import secrets
++from datetime import datetime, timedelta, timezone
++
++import jwt
++
++# scrypt da biblioteca padrao: guarda a senha sem dependencia nova
++_N, _R, _P = 2**14, 8, 1
++ALGORITMO_JWT = "HS256"
++ACESSO = "acesso"
++RENOVACAO = "renovacao"
++
++
++def gerar_hash_senha(senha: str) -> str:
++    sal = secrets.token_bytes(16)
++    chave = hashlib.scrypt(senha.encode(), salt=sal, n=_N, r=_R, p=_P, dklen=32)
++    return f"scrypt${_N}${_R}${_P}${sal.hex()}${chave.hex()}"
++
++
++def verificar_senha(senha: str, senha_hash: str) -> bool:
++    try:
++        algoritmo, n, r, p, sal, esperado = senha_hash.split("$")
++        if algoritmo != "scrypt":
++            return False
++        chave = hashlib.scrypt(
++            senha.encode(), salt=bytes.fromhex(sal), n=int(n), r=int(r), p=int(p), dklen=len(esperado) // 2
++        )
++    except ValueError:
++        # hash em outro formato (ex.: o texto fixo do seed): usuario ainda sem senha definida
++        return False
++    return hmac.compare_digest(chave.hex(), esperado)
++
++
++# usado quando o e-mail nao existe, para o login levar o mesmo tempo nos dois casos
++HASH_FICTICIO = gerar_hash_senha(secrets.token_urlsafe(16))
++
++
++def emitir_token(
++    id_usuario: int, tipo: str, validade: timedelta, segredo: str, **extras
++) -> tuple[str, datetime]:
++    agora = datetime.now(timezone.utc)
++    expira_em = agora + validade
++    dados = {"sub": str(id_usuario), "tipo": tipo, "iat": agora, "exp": expira_em, **extras}
++    return jwt.encode(dados, segredo, algorithm=ALGORITMO_JWT), expira_em
++
++
++def ler_token(token: str, tipo: str, segredo: str) -> dict | None:
++    try:
++        dados = jwt.decode(
++            token, segredo, algorithms=[ALGORITMO_JWT], options={"require": ["sub", "exp", "tipo"]}
++        )
++    except jwt.InvalidTokenError:
++        return None
++    # token de renovacao nao serve como token de acesso, e vice-versa
++    return dados if dados["tipo"] == tipo else None
+diff --git a/backend/src/api/series.py b/backend/src/api/series.py
+new file mode 100644
+index 0000000..3f04c4c
+--- /dev/null
++++ b/backend/src/api/series.py
+@@ -0,0 +1,75 @@
++"""Series do historico (UC03, RNF02): leituras brutas ou agregadas em blocos de 5 min / 1 h."""
++
++from datetime import datetime, timedelta
++
++from sqlalchemy import func, literal_column, select
++from sqlalchemy.orm import Session
++
++from src.db.models import Leitura, Previsao, Sensor, TipoSensor
++
++# raw usa a cadencia do no sensor (uma leitura por minuto) para limitar a janela
++PASSOS = {"raw": timedelta(minutes=1), "5m": timedelta(minutes=5), "1h": timedelta(hours=1)}
++MAX_PONTOS = 5000
++# date_bin e do PostgreSQL (14+), entao a consulta roda tambem no banco de teste, sem TimescaleDB.
++# Intervalo e origem vao literais para o SELECT e o GROUP BY ficarem identicos
++_INTERVALOS_SQL = {"5m": "interval '5 minutes'", "1h": "interval '1 hour'"}
++_ORIGEM_SQL = "timestamptz '2000-01-01 00:00:00+00'"
++# unidades do catalogo tipos_sensor do seed; valem enquanto o tanque nao tem sensor daquela grandeza.
++# O OD nao tem sensor: e a unidade da estimativa do ML
++UNIDADES_PADRAO = {"ph": "pH", "temperatura": "C", "turbidez": "NTU", "od": "mg/L"}
++
++
++def _serie(sessao: Session, ts, valor, origem, filtros, bucket: str | None) -> list[dict]:
++    if bucket is None:
++        # sem agregacao; com mais de um no no tanque, media dos que leram no mesmo instante
++        consulta = (
++            select(ts, func.round(func.avg(valor), 4))
++            .select_from(origem)
++            .where(*filtros)
++            .group_by(ts)
++            .order_by(ts)
++        )
++        return [{"ts": t, "valor": v} for t, v in sessao.execute(consulta)]
++
++    bloco = func.date_bin(literal_column(_INTERVALOS_SQL[bucket]), ts, literal_column(_ORIGEM_SQL))
++    consulta = (
++        select(bloco, func.round(func.avg(valor), 4), func.min(valor), func.max(valor))
++        .select_from(origem)
++        .where(*filtros)
++        .group_by(bloco)
++        .order_by(bloco)
++    )
++    return [{"ts": t, "valor": v, "min": mn, "max": mx} for t, v, mn, mx in sessao.execute(consulta)]
++
++
++def serie_fisica(
++    sessao: Session, id_tanque: int, grandeza: str, desde: datetime, ate: datetime, bucket: str
++) -> list[dict]:
++    origem = Leitura.__table__.join(Sensor, Sensor.id == Leitura.id_sensor).join(
++        TipoSensor, TipoSensor.id == Sensor.id_tipo
++    )
++    filtros = (Sensor.id_tanque == id_tanque, TipoSensor.grandeza == grandeza, Leitura.ts.between(desde, ate))
++    return _serie(sessao, Leitura.ts, Leitura.valor, origem, filtros, None if bucket == "raw" else bucket)
++
++
++def serie_od(sessao: Session, id_tanque: int, desde: datetime, ate: datetime, bucket: str) -> list[dict]:
++    # OD estimado: linhas h = 0 do servico de ML, uma por ciclo (5 min); so o bucket de 1 h agrega
++    filtros = (
++        Previsao.id_tanque == id_tanque,
++        Previsao.horizonte_h == 0,
++        Previsao.ts_previsao.between(desde, ate),
++    )
++    return _serie(
++        sessao, Previsao.ts_previsao, Previsao.valor_previsto, Previsao.__table__, filtros,
++        "1h" if bucket == "1h" else None,
++    )
++
++
++def unidades_do_tanque(sessao: Session, id_tanque: int) -> dict[str, str]:
++    linhas = sessao.execute(
++        select(TipoSensor.grandeza, TipoSensor.unidade)
++        .join(Sensor, Sensor.id_tipo == TipoSensor.id)
++        .where(Sensor.id_tanque == id_tanque)
++        .distinct()
++    ).all()
++    return UNIDADES_PADRAO | {grandeza: unidade for grandeza, unidade in linhas}
+diff --git a/backend/src/api/usuarios.py b/backend/src/api/usuarios.py
+new file mode 100644
+index 0000000..5b53a53
+--- /dev/null
++++ b/backend/src/api/usuarios.py
+@@ -0,0 +1,83 @@
++"""Cria um usuario do painel ou troca a senha de um que ja existe (a senha e pedida no terminal).
++
++    python -m src.api.usuarios --email admin@exemplo.com --nome "Nome Sobrenome" --perfil admin
++"""
++
++import argparse
++import getpass
++from datetime import datetime, timezone
++
++from sqlalchemy import func, select
++from sqlalchemy.orm import Session
++
++from src.api.seguranca import gerar_hash_senha
++from src.config import Settings
++from src.db.models import Usuario
++from src.db.session import criar_engine, criar_session_factory
++
++TAMANHO_MINIMO_SENHA = 8
++
++
++def definir_usuario(
++    session: Session,
++    email: str,
++    senha: str,
++    nome: str | None = None,
++    perfil: str | None = None,
++    telefone: str | None = None,
++) -> tuple[Usuario, bool]:
++    if len(senha) < TAMANHO_MINIMO_SENHA:
++        raise ValueError(f"a senha precisa ter pelo menos {TAMANHO_MINIMO_SENHA} caracteres")
++    email = email.strip().lower()
++    usuario = session.scalar(select(Usuario).where(func.lower(Usuario.email) == email))
++    if usuario is None:
++        if not nome:
++            raise ValueError("informe --nome para criar o usuario")
++        usuario = Usuario(
++            nome=nome,
++            email=email,
++            senha_hash=gerar_hash_senha(senha),
++            telefone=telefone,
++            perfil=perfil or "operador",
++            criado_em=datetime.now(timezone.utc),
++        )
++        session.add(usuario)
++        session.flush()
++        return usuario, True
++
++    # usuario existente (ex.: o do seed, criado sem senha): so muda o que foi informado
++    usuario.senha_hash = gerar_hash_senha(senha)
++    if nome:
++        usuario.nome = nome
++    if perfil:
++        usuario.perfil = perfil
++    if telefone:
++        usuario.telefone = telefone
++    session.flush()
++    return usuario, False
++
++
++def main(argv: list[str] | None = None) -> None:
++    parser = argparse.ArgumentParser(description="Cria usuario do painel ou troca a senha de um existente")
++    parser.add_argument("--email", required=True)
++    parser.add_argument("--nome")
++    parser.add_argument("--perfil", choices=["admin", "operador"])
++    parser.add_argument("--telefone", help="formato +5511987654321")
++    args = parser.parse_args(argv)
++
++    senha = getpass.getpass("Senha: ")
++    if senha != getpass.getpass("Repita a senha: "):
++        parser.exit(1, "as senhas nao conferem\n")
++
++    session_factory = criar_session_factory(criar_engine(Settings()))
++    with session_factory() as session:
++        try:
++            usuario, criado = definir_usuario(session, args.email, senha, args.nome, args.perfil, args.telefone)
++        except ValueError as erro:
++            parser.exit(1, f"{erro}\n")
++        session.commit()
++        print(f"Usuario {'criado' if criado else 'atualizado'}: {usuario.email} ({usuario.perfil})")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/backend/src/db/models.py b/backend/src/db/models.py
+index 4ab7d1f..771779e 100644
+--- a/backend/src/db/models.py
++++ b/backend/src/db/models.py
+@@ -1,179 +1,201 @@
+-from datetime import date, datetime
+-
+-from sqlalchemy import (
+-    BigInteger,
+-    CheckConstraint,
+-    Date,
+-    DateTime,
+-    ForeignKey,
+-    Identity,
+-    Index,
+-    Numeric,
+-    SmallInteger,
+-    String,
+-    UniqueConstraint,
+-    text,
+-)
+-from sqlalchemy.dialects.postgresql import INET
+-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+-
+-
+-class Base(DeclarativeBase):
+-    pass
+-
+-
+-class Usuario(Base):
+-    __tablename__ = "usuarios"
+-    __table_args__ = (
+-        CheckConstraint("perfil IN ('admin','operador')", name="ck_usuarios_perfil"),
+-    )
+-
+-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+-    nome: Mapped[str] = mapped_column(String(120))
+-    email: Mapped[str] = mapped_column(String(160), unique=True)
+-    senha_hash: Mapped[str] = mapped_column(String(255))
+-    telefone: Mapped[str | None] = mapped_column(String(20))
+-    perfil: Mapped[str] = mapped_column(String(20))
+-    criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+-
+-
+-class Especie(Base):
+-    __tablename__ = "especies"
+-    __table_args__ = (
+-        CheckConstraint("ph_min >= 0 AND ph_max <= 14 AND ph_min < ph_max", name="ck_especies_ph"),
+-        CheckConstraint(
+-            "temp_min >= -10 AND temp_max <= 50 AND temp_min < temp_max", name="ck_especies_temp"
+-        ),
+-        CheckConstraint("od_min >= 0 AND od_max <= 20 AND od_min < od_max", name="ck_especies_od"),
+-    )
+-
+-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+-    nome_comum: Mapped[str] = mapped_column(String(120))
+-    nome_cientifico: Mapped[str] = mapped_column(String(160), unique=True)
+-    ph_min: Mapped[float] = mapped_column(Numeric(4, 2))
+-    ph_max: Mapped[float] = mapped_column(Numeric(4, 2))
+-    temp_min: Mapped[float] = mapped_column(Numeric(4, 1))
+-    temp_max: Mapped[float] = mapped_column(Numeric(4, 1))
+-    od_min: Mapped[float] = mapped_column(Numeric(4, 2))
+-    od_max: Mapped[float] = mapped_column(Numeric(4, 2))
+-
+-
+-class Tanque(Base):
+-    __tablename__ = "tanques"
+-    __table_args__ = (
+-        CheckConstraint("volume_litros > 0", name="ck_tanques_volume"),
+-        CheckConstraint("quantidade_peixes >= 0", name="ck_tanques_qtd"),
+-        CheckConstraint("status IN ('ativo','manutencao','inativo')", name="ck_tanques_status"),
+-    )
+-
+-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+-    id_usuario: Mapped[int] = mapped_column(
+-        BigInteger, ForeignKey("usuarios.id", ondelete="CASCADE")
+-    )
+-    id_especie: Mapped[int | None] = mapped_column(
+-        BigInteger, ForeignKey("especies.id", ondelete="SET NULL")
+-    )
+-    nome: Mapped[str] = mapped_column(String(120))
+-    volume_litros: Mapped[float] = mapped_column(Numeric(8, 2))
+-    quantidade_peixes: Mapped[int]
+-    data_povoamento: Mapped[date | None] = mapped_column(Date)
+-    status: Mapped[str] = mapped_column(String(20))
+-    criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+-
+-
+-class Dispositivo(Base):
+-    __tablename__ = "dispositivos"
+-    __table_args__ = (
+-        CheckConstraint("status_conexao IN ('online','offline')", name="ck_disp_conexao"),
+-    )
+-
+-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+-    id_tanque: Mapped[int] = mapped_column(
+-        BigInteger, ForeignKey("tanques.id", ondelete="CASCADE")
+-    )
+-    nome: Mapped[str] = mapped_column(String(120))
+-    modelo_esp32: Mapped[str] = mapped_column(String(60))
+-    mac_address: Mapped[str] = mapped_column(String(17), unique=True)
+-    versao_firmware: Mapped[str | None] = mapped_column(String(30))
+-    ip_local: Mapped[str | None] = mapped_column(INET)
+-    status_conexao: Mapped[str] = mapped_column(String(20))
+-    ultimo_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+-    data_cadastro: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+-
+-
+-class TipoSensor(Base):
+-    __tablename__ = "tipos_sensor"
+-    __table_args__ = (
+-        CheckConstraint("grandeza IN ('ph','temperatura','turbidez','od')", name="ck_tipos_grandeza"),
+-        CheckConstraint("faixa_min < faixa_max", name="ck_tipos_faixa"),
+-    )
+-
+-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+-    grandeza: Mapped[str] = mapped_column(String(30))
+-    modelo: Mapped[str] = mapped_column(String(80), unique=True)
+-    unidade: Mapped[str] = mapped_column(String(20))
+-    faixa_min: Mapped[float] = mapped_column(Numeric(8, 2))
+-    faixa_max: Mapped[float] = mapped_column(Numeric(8, 2))
+-
+-
+-class Sensor(Base):
+-    __tablename__ = "sensores"
+-    __table_args__ = (
+-        CheckConstraint("status IN ('ativo','inativo','em_calibracao')", name="ck_sens_status"),
+-    )
+-
+-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+-    id_dispositivo: Mapped[int] = mapped_column(
+-        BigInteger, ForeignKey("dispositivos.id", ondelete="CASCADE")
+-    )
+-    id_tipo: Mapped[int] = mapped_column(BigInteger, ForeignKey("tipos_sensor.id"))
+-    id_tanque: Mapped[int] = mapped_column(
+-        BigInteger, ForeignKey("tanques.id", ondelete="CASCADE")
+-    )
+-    data_instalacao: Mapped[date] = mapped_column(Date)
+-    status: Mapped[str] = mapped_column(String(20))
+-
+-
+-class Leitura(Base):
+-    __tablename__ = "leituras"
+-    __table_args__ = (
+-        CheckConstraint("valor BETWEEN -50 AND 3000", name="ck_leit_valor"),
+-        Index("ix_leituras_sensor_ts", "id_sensor", text("ts DESC")),
+-        Index("leituras_ts_idx", text("ts DESC")),
+-        UniqueConstraint("id_sensor", "ts", name="uq_leituras_sensor_ts"),
+-    )
+-
+-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+-    id_sensor: Mapped[int] = mapped_column(
+-        BigInteger, ForeignKey("sensores.id", ondelete="CASCADE")
+-    )
+-    valor: Mapped[float] = mapped_column(Numeric(10, 4))
+-    unidade: Mapped[str] = mapped_column(String(20))
+-
+-
+-class Previsao(Base):
+-    __tablename__ = "previsoes"
+-    __table_args__ = (
+-        CheckConstraint("nivel_risco IN ('otimo','atencao','critico')", name="ck_prev_nivel"),
+-        # h=0 e a estimativa de OD do instante atual (desvio declarado do DDL
+-        # do TC1, que so previa 1, 2 e 3; ver spec do sub-projeto 3)
+-        CheckConstraint("horizonte_h IN (0,1,2,3)", name="ck_prev_horiz"),
+-        CheckConstraint(
+-            "parametro_critico IN ('ph','temperatura','turbidez','od')", name="ck_prev_param"
+-        ),
+-        CheckConstraint("confianca IS NULL OR confianca BETWEEN 0 AND 1", name="ck_prev_conf"),
+-    )
+-
+-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+-    id_tanque: Mapped[int] = mapped_column(
+-        BigInteger, ForeignKey("tanques.id", ondelete="CASCADE", name="fk_prev_tanque")
+-    )
+-    parametro_critico: Mapped[str] = mapped_column(String(30))
+-    valor_previsto: Mapped[float] = mapped_column(Numeric(10, 4))
+-    nivel_risco: Mapped[str] = mapped_column(String(20))
+-    horizonte_h: Mapped[int] = mapped_column(SmallInteger)
+-    confianca: Mapped[float | None] = mapped_column(Numeric(5, 4))
+-    ts_previsao: Mapped[datetime] = mapped_column(
+-        DateTime(timezone=True), server_default=text("now()")
+-    )
++from datetime import date, datetime
++
++from sqlalchemy import (
++    BigInteger,
++    CheckConstraint,
++    Date,
++    DateTime,
++    ForeignKey,
++    Identity,
++    Index,
++    Numeric,
++    SmallInteger,
++    String,
++    UniqueConstraint,
++    text,
++)
++from sqlalchemy.dialects.postgresql import INET
++from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
++
++
++class Base(DeclarativeBase):
++    pass
++
++
++class Usuario(Base):
++    __tablename__ = "usuarios"
++    __table_args__ = (
++        CheckConstraint("perfil IN ('admin','operador')", name="ck_usuarios_perfil"),
++    )
++
++    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
++    nome: Mapped[str] = mapped_column(String(120))
++    email: Mapped[str] = mapped_column(String(160), unique=True)
++    senha_hash: Mapped[str] = mapped_column(String(255))
++    telefone: Mapped[str | None] = mapped_column(String(20))
++    perfil: Mapped[str] = mapped_column(String(20))
++    criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True))
++
++
++class Especie(Base):
++    __tablename__ = "especies"
++    __table_args__ = (
++        CheckConstraint("ph_min >= 0 AND ph_max <= 14 AND ph_min < ph_max", name="ck_especies_ph"),
++        CheckConstraint(
++            "temp_min >= -10 AND temp_max <= 50 AND temp_min < temp_max", name="ck_especies_temp"
++        ),
++        CheckConstraint("od_min >= 0 AND od_max <= 20 AND od_min < od_max", name="ck_especies_od"),
++    )
++
++    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
++    nome_comum: Mapped[str] = mapped_column(String(120))
++    nome_cientifico: Mapped[str] = mapped_column(String(160), unique=True)
++    ph_min: Mapped[float] = mapped_column(Numeric(4, 2))
++    ph_max: Mapped[float] = mapped_column(Numeric(4, 2))
++    temp_min: Mapped[float] = mapped_column(Numeric(4, 1))
++    temp_max: Mapped[float] = mapped_column(Numeric(4, 1))
++    od_min: Mapped[float] = mapped_column(Numeric(4, 2))
++    od_max: Mapped[float] = mapped_column(Numeric(4, 2))
++
++
++class Tanque(Base):
++    __tablename__ = "tanques"
++    __table_args__ = (
++        CheckConstraint("volume_litros > 0", name="ck_tanques_volume"),
++        CheckConstraint("quantidade_peixes >= 0", name="ck_tanques_qtd"),
++        CheckConstraint("status IN ('ativo','manutencao','inativo')", name="ck_tanques_status"),
++    )
++
++    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
++    id_usuario: Mapped[int] = mapped_column(
++        BigInteger, ForeignKey("usuarios.id", ondelete="CASCADE")
++    )
++    id_especie: Mapped[int | None] = mapped_column(
++        BigInteger, ForeignKey("especies.id", ondelete="SET NULL")
++    )
++    nome: Mapped[str] = mapped_column(String(120))
++    volume_litros: Mapped[float] = mapped_column(Numeric(8, 2))
++    quantidade_peixes: Mapped[int]
++    data_povoamento: Mapped[date | None] = mapped_column(Date)
++    status: Mapped[str] = mapped_column(String(20))
++    criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True))
++
++
++class Dispositivo(Base):
++    __tablename__ = "dispositivos"
++    __table_args__ = (
++        CheckConstraint("status_conexao IN ('online','offline')", name="ck_disp_conexao"),
++    )
++
++    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
++    id_tanque: Mapped[int] = mapped_column(
++        BigInteger, ForeignKey("tanques.id", ondelete="CASCADE")
++    )
++    nome: Mapped[str] = mapped_column(String(120))
++    modelo_esp32: Mapped[str] = mapped_column(String(60))
++    mac_address: Mapped[str] = mapped_column(String(17), unique=True)
++    versao_firmware: Mapped[str | None] = mapped_column(String(30))
++    ip_local: Mapped[str | None] = mapped_column(INET)
++    status_conexao: Mapped[str] = mapped_column(String(20))
++    ultimo_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
++    data_cadastro: Mapped[datetime] = mapped_column(DateTime(timezone=True))
++
++
++class TipoSensor(Base):
++    __tablename__ = "tipos_sensor"
++    __table_args__ = (
++        CheckConstraint("grandeza IN ('ph','temperatura','turbidez','od')", name="ck_tipos_grandeza"),
++        CheckConstraint("faixa_min < faixa_max", name="ck_tipos_faixa"),
++    )
++
++    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
++    grandeza: Mapped[str] = mapped_column(String(30))
++    modelo: Mapped[str] = mapped_column(String(80), unique=True)
++    unidade: Mapped[str] = mapped_column(String(20))
++    faixa_min: Mapped[float] = mapped_column(Numeric(8, 2))
++    faixa_max: Mapped[float] = mapped_column(Numeric(8, 2))
++
++
++class Sensor(Base):
++    __tablename__ = "sensores"
++    __table_args__ = (
++        CheckConstraint("status IN ('ativo','inativo','em_calibracao')", name="ck_sens_status"),
++    )
++
++    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
++    id_dispositivo: Mapped[int] = mapped_column(
++        BigInteger, ForeignKey("dispositivos.id", ondelete="CASCADE")
++    )
++    id_tipo: Mapped[int] = mapped_column(BigInteger, ForeignKey("tipos_sensor.id"))
++    id_tanque: Mapped[int] = mapped_column(
++        BigInteger, ForeignKey("tanques.id", ondelete="CASCADE")
++    )
++    data_instalacao: Mapped[date] = mapped_column(Date)
++    status: Mapped[str] = mapped_column(String(20))
++
++
++class Leitura(Base):
++    __tablename__ = "leituras"
++    __table_args__ = (
++        CheckConstraint("valor BETWEEN -50 AND 3000", name="ck_leit_valor"),
++        Index("ix_leituras_sensor_ts", "id_sensor", text("ts DESC")),
++        Index("leituras_ts_idx", text("ts DESC")),
++        UniqueConstraint("id_sensor", "ts", name="uq_leituras_sensor_ts"),
++    )
++
++    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
++    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
++    id_sensor: Mapped[int] = mapped_column(
++        BigInteger, ForeignKey("sensores.id", ondelete="CASCADE")
++    )
++    valor: Mapped[float] = mapped_column(Numeric(10, 4))
++    unidade: Mapped[str] = mapped_column(String(20))
++
++
++class Previsao(Base):
++    __tablename__ = "previsoes"
++    __table_args__ = (
++        CheckConstraint("nivel_risco IN ('otimo','atencao','critico')", name="ck_prev_nivel"),
++        # h=0 e a estimativa de OD do instante atual (desvio declarado do DDL
++        # do TC1, que so previa 1, 2 e 3; ver spec do sub-projeto 3)
++        CheckConstraint("horizonte_h IN (0,1,2,3)", name="ck_prev_horiz"),
++        CheckConstraint(
++            "parametro_critico IN ('ph','temperatura','turbidez','od')", name="ck_prev_param"
++        ),
++        CheckConstraint("confianca IS NULL OR confianca BETWEEN 0 AND 1", name="ck_prev_conf"),
++    )
++
++    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
++    id_tanque: Mapped[int] = mapped_column(
++        BigInteger, ForeignKey("tanques.id", ondelete="CASCADE", name="fk_prev_tanque")
++    )
++    parametro_critico: Mapped[str] = mapped_column(String(30))
++    valor_previsto: Mapped[float] = mapped_column(Numeric(10, 4))
++    nivel_risco: Mapped[str] = mapped_column(String(20))
++    horizonte_h: Mapped[int] = mapped_column(SmallInteger)
++    confianca: Mapped[float | None] = mapped_column(Numeric(5, 4))
++    ts_previsao: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), server_default=text("now()")
++    )
++
++
++class AcionamentoAtuador(Base):
++    __tablename__ = "acionamentos_atuador"
++    __table_args__ = (CheckConstraint("acao IN ('ligar','desligar')", name="ck_acio_acao"),)
++
++    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
++    id_dispositivo: Mapped[int] = mapped_column(
++        BigInteger, ForeignKey("dispositivos.id", ondelete="CASCADE", name="fk_acio_disp")
++    )
++    id_tanque: Mapped[int] = mapped_column(
++        BigInteger, ForeignKey("tanques.id", ondelete="CASCADE", name="fk_acio_tanque")
++    )
++    # preenchido quando o acionamento vem de uma previsao (automatico); nulo no comando manual
++    id_previsao: Mapped[int | None] = mapped_column(
++        BigInteger, ForeignKey("previsoes.id", ondelete="SET NULL", name="fk_acio_prev")
++    )
++    acao: Mapped[str] = mapped_column(String(10))
++    motivo: Mapped[str | None] = mapped_column(String(160))
++    ts_acionamento: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), server_default=text("now()")
++    )
+diff --git a/backend/tests/api/__init__.py b/backend/tests/api/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/tests/api/conftest.py b/backend/tests/api/conftest.py
+new file mode 100644
+index 0000000..447dc1e
+--- /dev/null
++++ b/backend/tests/api/conftest.py
+@@ -0,0 +1,51 @@
++import pytest
++from fastapi.testclient import TestClient
++from sqlalchemy import select
++from sqlalchemy.orm import sessionmaker
++
++from src.api.app import criar_app
++from src.api.config import ConfigApi
++from src.api.dependencias import obter_sessao
++from src.api.usuarios import definir_usuario
++from src.db.models import Tanque
++from src.db.seed import semear
++from tests.api.fabricas import SENHA, PublicadorFalso
++
++
++@pytest.fixture()
++def config() -> ConfigApi:
++    return ConfigApi(_env_file=None, api_jwt_segredo="s" * 48, api_cookie_seguro=False)
++
++
++@pytest.fixture()
++def publicador() -> PublicadorFalso:
++    return PublicadorFalso()
++
++
++@pytest.fixture()
++def cliente(db_session, config, publicador):
++    app = criar_app(config, fabrica_sessao=sessionmaker(), publicador=publicador)
++    app.dependency_overrides[obter_sessao] = lambda: db_session
++    with TestClient(app, base_url="http://testserver/api/v1") as cliente:
++        yield cliente
++
++
++@pytest.fixture()
++def usuario(db_session):
++    usuario, _ = definir_usuario(db_session, "admin@teste.local", SENHA, nome="Admin Teste", perfil="admin")
++    db_session.commit()
++    return usuario
++
++
++@pytest.fixture()
++def autenticado(cliente, usuario):
++    resposta = cliente.post("/auth/login", json={"email": usuario.email, "senha": SENHA})
++    cliente.headers["Authorization"] = f"Bearer {resposta.json()['access_token']}"
++    return cliente
++
++
++@pytest.fixture()
++def tanque(db_session) -> Tanque:
++    semear(db_session)
++    db_session.commit()
++    return db_session.scalar(select(Tanque).where(Tanque.nome == "Tanque bancada TCC"))
+diff --git a/backend/tests/api/fabricas.py b/backend/tests/api/fabricas.py
+new file mode 100644
+index 0000000..f3c5735
+--- /dev/null
++++ b/backend/tests/api/fabricas.py
+@@ -0,0 +1,80 @@
++"""Dados de teste no formato que a ingestao e o servico de ML gravam."""
++
++from datetime import datetime, timedelta, timezone
++
++from sqlalchemy import select
++
++from src.db.models import Leitura, Previsao, Sensor, Tanque, TipoSensor
++
++MINUTO = timedelta(minutes=1)
++SENHA = "senha-de-teste"
++UNIDADES = {"ph": "pH", "temperatura": "C", "turbidez": "NTU"}
++
++
++class PublicadorFalso:
++    """No lugar do broker MQTT: guarda os comandos e pode simular o broker fora do ar."""
++
++    def __init__(self) -> None:
++        self.publicados: list[dict] = []
++        self.disponivel = True
++
++    def iniciar(self) -> None:
++        pass
++
++    def parar(self) -> None:
++        pass
++
++    def publicar_aerador(self, mac: str, acao: str, id_acionamento: int, ts: int) -> bool:
++        if not self.disponivel:
++            return False
++        self.publicados.append({"mac": mac, "acao": acao, "id": id_acionamento, "ts": ts})
++        return True
++
++
++def agora() -> datetime:
++    return datetime.now(timezone.utc).replace(microsecond=0)
++
++
++def sensores(db_session, tanque: Tanque) -> dict[str, Sensor]:
++    linhas = db_session.execute(
++        select(TipoSensor.grandeza, Sensor)
++        .join(Sensor, Sensor.id_tipo == TipoSensor.id)
++        .where(Sensor.id_tanque == tanque.id)
++    ).all()
++    return {grandeza: sensor for grandeza, sensor in linhas}
++
++
++def gravar_leituras(db_session, tanque: Tanque, ts: datetime, **valores: float) -> None:
++    """Uma mensagem do no: `gravar_leituras(s, t, ts, ph=7.1, temperatura=26.0)`."""
++    por_grandeza = sensores(db_session, tanque)
++    for grandeza, valor in valores.items():
++        db_session.add(
++            Leitura(id_sensor=por_grandeza[grandeza].id, valor=valor, unidade=UNIDADES[grandeza], ts=ts)
++        )
++    db_session.flush()
++
++
++def gravar_ciclo(
++    db_session,
++    tanque: Tanque,
++    ts: datetime,
++    od: float = 5.6,
++    nivel_od: str = "otimo",
++    confianca_od: float = 0.8,
++    niveis: tuple[str, str, str] = ("otimo", "atencao", "critico"),
++) -> None:
++    """As 4 linhas de um ciclo do servico de ML: h = 0 (OD agora) e h = 1..3, com o mesmo ts_previsao."""
++    db_session.add(
++        Previsao(
++            id_tanque=tanque.id, parametro_critico="od", valor_previsto=od, nivel_risco=nivel_od,
++            horizonte_h=0, confianca=confianca_od, ts_previsao=ts,
++        )
++    )
++    for h, nivel in enumerate(niveis, start=1):
++        db_session.add(
++            Previsao(
++                id_tanque=tanque.id, parametro_critico="ph", valor_previsto=7.0 + h / 10, nivel_risco=nivel,
++                horizonte_h=h, confianca=0.9, ts_previsao=ts,
++            )
++        )
++    db_session.flush()
+diff --git a/backend/tests/api/test_aerador.py b/backend/tests/api/test_aerador.py
+new file mode 100644
+index 0000000..d4c6b82
+--- /dev/null
++++ b/backend/tests/api/test_aerador.py
+@@ -0,0 +1,115 @@
++from datetime import timedelta
++
++from sqlalchemy import func, select
++
++from src.api.usuarios import definir_usuario
++from src.db.models import AcionamentoAtuador, Dispositivo, Previsao
++from tests.api.fabricas import SENHA, agora, gravar_ciclo
++
++
++def _id_dispositivo(db_session, tanque) -> int:
++    return db_session.scalar(select(Dispositivo.id).where(Dispositivo.id_tanque == tanque.id))
++
++
++def _total_acionamentos(db_session) -> int:
++    return db_session.scalar(select(func.count()).select_from(AcionamentoAtuador))
++
++
++def test_ligar_registra_o_acionamento_e_publica_o_comando(autenticado, db_session, tanque, publicador):
++    id_dispositivo = _id_dispositivo(db_session, tanque)
++    resposta = autenticado.post(f"/dispositivos/{id_dispositivo}/aerador", json={"acao": "ligar"})
++
++    assert resposta.status_code == 202, resposta.text
++    corpo = resposta.json()
++    assert corpo["acao"] == "ligar"
++    assert corpo["motivo"] == "Comando manual de Admin Teste pelo painel."
++    assert corpo["ts_acionamento"].endswith("Z")
++
++    [comando] = publicador.publicados
++    assert comando == {"mac": "a4:f0:0f:64:3c:70", "acao": "ligar", "id": corpo["id"], "ts": comando["ts"]}
++    acionamento = db_session.get(AcionamentoAtuador, corpo["id"])
++    assert (acionamento.id_dispositivo, acionamento.id_tanque, acionamento.id_previsao) == (
++        id_dispositivo, tanque.id, None,
++    )
++
++
++def test_produtor_tambem_comanda_o_aerador(cliente, db_session, tanque, publicador):
++    definir_usuario(db_session, "produtor@teste.local", SENHA, nome="Produtor", perfil="operador")
++    db_session.commit()
++    token = cliente.post("/auth/login", json={"email": "produtor@teste.local", "senha": SENHA}).json()["access_token"]
++
++    resposta = cliente.post(
++        f"/dispositivos/{_id_dispositivo(db_session, tanque)}/aerador",
++        json={"acao": "desligar"},
++        headers={"Authorization": f"Bearer {token}"},
++    )
++    assert resposta.status_code == 202
++    assert publicador.publicados[0]["acao"] == "desligar"
++
++
++def test_broker_fora_do_ar_da_503_e_nao_registra(autenticado, db_session, tanque, publicador):
++    publicador.disponivel = False
++    resposta = autenticado.post(f"/dispositivos/{_id_dispositivo(db_session, tanque)}/aerador", json={"acao": "ligar"})
++
++    assert resposta.status_code == 503
++    assert resposta.json()["detail"] == "Não foi possível enviar o comando ao nó sensor. Tente novamente em instantes."
++    assert _total_acionamentos(db_session) == 0
++
++
++def test_validacoes(cliente, autenticado, db_session, tanque, publicador):
++    id_dispositivo = _id_dispositivo(db_session, tanque)
++    assert autenticado.post("/dispositivos/999999/aerador", json={"acao": "ligar"}).status_code == 404
++    assert autenticado.post(f"/dispositivos/{id_dispositivo}/aerador", json={"acao": "girar"}).status_code == 422
++    sem_token = cliente.post(
++        f"/dispositivos/{id_dispositivo}/aerador", json={"acao": "ligar"}, headers={"Authorization": ""}
++    )
++    assert sem_token.status_code == 401
++    assert publicador.publicados == []
++
++
++def test_dispositivo_mostra_o_ultimo_comando(autenticado, db_session, tanque):
++    id_dispositivo = _id_dispositivo(db_session, tanque)
++    url = f"/tanques/{tanque.id}/dispositivos"
++    assert autenticado.get(url).json()[0]["ultimo_acionamento"] is None
++
++    autenticado.post(f"/dispositivos/{id_dispositivo}/aerador", json={"acao": "ligar"})
++    desligar = autenticado.post(f"/dispositivos/{id_dispositivo}/aerador", json={"acao": "desligar"}).json()
++
++    ultimo = autenticado.get(url).json()[0]["ultimo_acionamento"]
++    assert ultimo == desligar | {"automatico": False}
++
++
++def test_acionamento_ligado_a_previsao_conta_como_automatico(autenticado, db_session, tanque):
++    gravar_ciclo(db_session, tanque, agora(), od=2.6, nivel_od="critico")
++    id_previsao = db_session.scalar(select(Previsao.id).where(Previsao.horizonte_h == 0))
++    db_session.add(
++        AcionamentoAtuador(
++            id_dispositivo=_id_dispositivo(db_session, tanque), id_tanque=tanque.id, id_previsao=id_previsao,
++            acao="ligar", motivo="OD estimado abaixo de 3 mg/L.", ts_acionamento=agora(),
++        )
++    )
++    db_session.commit()
++
++    ultimo = autenticado.get(f"/tanques/{tanque.id}/dispositivos").json()[0]["ultimo_acionamento"]
++    assert (ultimo["automatico"], ultimo["motivo"]) == (True, "OD estimado abaixo de 3 mg/L.")
++
++
++def test_eventos_trazem_os_acionamentos_mais_recentes_primeiro(autenticado, db_session, tanque):
++    id_dispositivo = _id_dispositivo(db_session, tanque)
++    base = agora()
++    for minutos, acao in [(30, "ligar"), (20, "desligar"), (10, "ligar")]:
++        db_session.add(
++            AcionamentoAtuador(
++                id_dispositivo=id_dispositivo, id_tanque=tanque.id, acao=acao, motivo=None,
++                ts_acionamento=base - timedelta(minutes=minutos),
++            )
++        )
++    db_session.commit()
++
++    pagina = autenticado.get("/eventos", params={"por_pagina": 2}).json()
++    assert pagina["total"] == 3 and pagina["pagina"] == 1
++    [primeiro, segundo] = pagina["itens"]
++    assert primeiro["tipo"] == "acionamento" and primeiro["id"].startswith("acionamento-")
++    assert (primeiro["acao"], segundo["acao"]) == ("ligar", "desligar")
++    assert primeiro["tanque_nome"] == "Tanque bancada TCC" and primeiro["automatico"] is False
++    assert len(autenticado.get("/eventos", params={"pagina": 2, "por_pagina": 2}).json()["itens"]) == 1
+diff --git a/backend/tests/api/test_autenticacao.py b/backend/tests/api/test_autenticacao.py
+new file mode 100644
+index 0000000..4a9b616
+--- /dev/null
++++ b/backend/tests/api/test_autenticacao.py
+@@ -0,0 +1,107 @@
++from src.api.rotas.autenticacao import COOKIE_RENOVACAO
++from src.db.seed import semear
++from tests.api.fabricas import SENHA
++
++
++def _cookie(resposta) -> str:
++    return resposta.headers["set-cookie"]
++
++
++def test_login_devolve_token_e_cookie_de_renovacao(cliente, usuario):
++    resposta = cliente.post("/auth/login", json={"email": "ADMIN@teste.local ", "senha": SENHA})
++
++    assert resposta.status_code == 200
++    corpo = resposta.json()
++    assert corpo["access_token"] and corpo["expira_em"]
++    cookie = _cookie(resposta)
++    assert cookie.startswith(f"{COOKIE_RENOVACAO}=")
++    assert "HttpOnly" in cookie and "SameSite=strict" in cookie and "Path=/api/v1/auth" in cookie
++    # sem "lembrar de mim": cookie de sessao
++    assert "Max-Age" not in cookie
++
++
++def test_lembrar_de_mim_deixa_o_cookie_persistente(cliente, usuario):
++    resposta = cliente.post("/auth/login", json={"email": usuario.email, "senha": SENHA, "lembrar": True})
++    assert "Max-Age=2592000" in _cookie(resposta)
++
++
++def test_cookie_e_secure_por_padrao(cliente, usuario, config):
++    config.api_cookie_seguro = True
++    resposta = cliente.post("/auth/login", json={"email": usuario.email, "senha": SENHA})
++    assert "Secure" in _cookie(resposta)
++
++
++def test_login_com_senha_errada_ou_email_desconhecido_da_401(cliente, usuario):
++    for email, senha in [(usuario.email, "outra-senha"), ("ninguem@teste.local", SENHA)]:
++        resposta = cliente.post("/auth/login", json={"email": email, "senha": senha})
++        assert resposta.status_code == 401
++        assert resposta.json() == {"detail": "E-mail ou senha incorretos."}
++
++
++def test_usuario_do_seed_sem_senha_nao_entra(cliente, db_session):
++    semear(db_session)
++    db_session.commit()
++    resposta = cliente.post(
++        "/auth/login", json={"email": "operador@piscicultura.local", "senha": "sem-autenticacao-neste-sub-projeto"}
++    )
++    assert resposta.status_code == 401
++
++
++def test_rotas_protegidas_exigem_token(cliente):
++    for caminho in ("/auth/eu", "/tanques", "/especies", "/alertas"):
++        resposta = cliente.get(caminho)
++        assert resposta.status_code == 401, caminho
++    assert cliente.get("/auth/eu", headers={"Authorization": "Bearer invalido"}).status_code == 401
++
++
++def test_eu_devolve_o_usuario_sem_senha(autenticado):
++    corpo = autenticado.get("/auth/eu").json()
++    assert corpo == {
++        "id": corpo["id"], "nome": "Admin Teste", "email": "admin@teste.local", "telefone": None, "perfil": "admin",
++    }
++
++
++def test_refresh_usa_o_cookie_e_o_token_de_renovacao_nao_serve_de_acesso(cliente, usuario):
++    cliente.post("/auth/login", json={"email": usuario.email, "senha": SENHA})
++    renovacao = cliente.cookies[COOKIE_RENOVACAO]
++
++    resposta = cliente.post("/auth/refresh")
++    assert resposta.status_code == 200
++    novo = resposta.json()["access_token"]
++    assert cliente.get("/auth/eu", headers={"Authorization": f"Bearer {novo}"}).status_code == 200
++    assert cliente.get("/auth/eu", headers={"Authorization": f"Bearer {renovacao}"}).status_code == 401
++
++
++def test_refresh_sem_cookie_da_401(cliente):
++    resposta = cliente.post("/auth/refresh")
++    assert resposta.status_code == 401
++
++
++def test_logout_apaga_o_cookie(cliente, usuario):
++    cliente.post("/auth/login", json={"email": usuario.email, "senha": SENHA})
++    resposta = cliente.post("/auth/logout")
++
++    assert resposta.status_code == 204
++    assert 'renovacao=""' in _cookie(resposta) and "Max-Age=0" in _cookie(resposta)
++    assert cliente.post("/auth/refresh").status_code == 401
++
++
++def test_atualizar_conta(autenticado):
++    resposta = autenticado.patch("/auth/eu", json={"nome": "  Marina Souza ", "telefone": "+5511987654321"})
++    assert resposta.status_code == 200
++    assert resposta.json()["nome"] == "Marina Souza"
++    assert resposta.json()["telefone"] == "+5511987654321"
++
++    resposta = autenticado.patch("/auth/eu", json={"nome": "Marina Souza", "telefone": None})
++    assert resposta.json()["telefone"] is None
++
++
++def test_atualizar_conta_valida_os_campos_em_portugues(autenticado):
++    resposta = autenticado.patch("/auth/eu", json={"nome": " ", "telefone": "1234"})
++
++    assert resposta.status_code == 422
++    erros = {tuple(e["loc"]): e["msg"] for e in resposta.json()["detail"]}
++    assert erros == {
++        ("body", "nome"): "Informe seu nome.",
++        ("body", "telefone"): "Informe DDD e número, como (11) 98765-4321.",
++    }
+diff --git a/backend/tests/api/test_cadastro.py b/backend/tests/api/test_cadastro.py
+new file mode 100644
+index 0000000..939a558
+--- /dev/null
++++ b/backend/tests/api/test_cadastro.py
+@@ -0,0 +1,231 @@
++from datetime import date, timedelta
++
++import pytest
++from sqlalchemy import func, select
++
++from src.api.rotas import cadastro
++from src.api.usuarios import definir_usuario
++from src.db.models import Dispositivo, Sensor, Tanque
++from src.mqtt.processor import LeituraProcessor
++from src.mqtt.schemas import LeituraMqttPayload
++from tests.api.fabricas import SENHA
++
++MAC_NOVO = "a4:f0:0f:64:3c:99"
++MAC_REPETIDO = "Este endereço MAC já está cadastrado em outro dispositivo."
++
++
++def _dados_tanque(tanque_seed: Tanque, **sobrescritas) -> dict:
++    dados = {
++        "nome": "Tanque Norte",
++        "id_especie": tanque_seed.id_especie,
++        "volume_litros": 500,
++        "quantidade_peixes": 40,
++        "data_povoamento": "2026-08-10",
++        "status": "ativo",
++    }
++    return dados | sobrescritas
++
++
++def _dados_dispositivo(**sobrescritas) -> dict:
++    dados = {
++        "nome": "No sensor Norte",
++        "mac_address": "A4-F0-0F-64-3C-99",
++        "modelo_esp32": "ESP32 DevKitC V4",
++        "versao_firmware": "1.2.0",
++        "ip_local": "192.168.0.21",
++    }
++    return dados | sobrescritas
++
++
++def _erros(resposta) -> dict[tuple, tuple[str, str]]:
++    return {tuple(e["loc"]): (e["msg"], e["type"]) for e in resposta.json()["detail"]}
++
++
++def _total(db_session, modelo) -> int:
++    return db_session.scalar(select(func.count()).select_from(modelo))
++
++
++def test_cria_tanque_sem_dispositivo(autenticado, tanque):
++    resposta = autenticado.post("/tanques", json=_dados_tanque(tanque, data_povoamento=None))
++
++    assert resposta.status_code == 201, resposta.text
++    corpo = resposta.json()
++    assert corpo["nome"] == "Tanque Norte"
++    assert corpo["volume_litros"] == "500.00"
++    assert corpo["data_povoamento"] is None
++    assert corpo["especie"]["id"] == tanque.id_especie
++    assert corpo["dispositivos"] == [] and corpo["ultimas_leituras"] == []
++    assert corpo["nivel_risco"] is None
++
++
++def test_cria_tanque_com_dispositivo_e_os_tres_sensores_na_mesma_transacao(autenticado, db_session, tanque):
++    resposta = autenticado.post("/tanques", json=_dados_tanque(tanque, dispositivo=_dados_dispositivo()))
++
++    assert resposta.status_code == 201, resposta.text
++    corpo = resposta.json()
++    [resumo] = corpo["dispositivos"]
++    assert resumo["status_conexao"] == "offline"
++
++    [dispositivo] = autenticado.get(f"/tanques/{corpo['id']}/dispositivos").json()
++    assert dispositivo["mac_address"] == MAC_NOVO  # normalizado como a ingestao procura
++    assert dispositivo["ip_local"] == "192.168.0.21"
++    assert sorted((s["grandeza"], s["status"]) for s in dispositivo["sensores"]) == [
++        ("ph", "ativo"), ("temperatura", "ativo"), ("turbidez", "ativo"),
++    ]
++    sensores = db_session.scalars(select(Sensor).where(Sensor.id_dispositivo == dispositivo["id"])).all()
++    assert {s.id_tanque for s in sensores} == {corpo["id"]}
++
++
++def test_dispositivo_cadastrado_pela_api_ja_recebe_leituras_da_ingestao(autenticado, db_session, tanque):
++    autenticado.post("/tanques", json=_dados_tanque(tanque, dispositivo=_dados_dispositivo()))
++
++    payload = LeituraMqttPayload(mac="a4f00f643c99", ts=1791590400, ph=7.1, temperatura=26.0, turbidez=None)
++    assert LeituraProcessor().processar_payload(db_session, payload) == 2
++
++
++def test_modelo_vazio_usa_o_padrao_e_opcionais_vazios_viram_nulos(autenticado, tanque):
++    dispositivo = _dados_dispositivo(modelo_esp32="", versao_firmware=" ", ip_local="")
++    corpo = autenticado.post("/tanques", json=_dados_tanque(tanque, dispositivo=dispositivo)).json()
++
++    [d] = autenticado.get(f"/tanques/{corpo['id']}/dispositivos").json()
++    assert (d["modelo_esp32"], d["versao_firmware"], d["ip_local"]) == ("ESP32 DevKitC V4", None, None)
++
++
++def test_mac_repetido_da_409_e_nao_grava_nem_o_tanque(autenticado, db_session, tanque):
++    antes = _total(db_session, Tanque)
++    # o MAC do no do seed, escrito de outro jeito
++    dispositivo = _dados_dispositivo(mac_address="A4F00F643C70")
++    resposta = autenticado.post("/tanques", json=_dados_tanque(tanque, dispositivo=dispositivo))
++
++    assert resposta.status_code == 409
++    assert _erros(resposta) == {("body", "dispositivo", "mac_address"): (MAC_REPETIDO, "conflict")}
++    assert _total(db_session, Tanque) == antes
++
++
++def test_mac_gravado_por_outra_requisicao_depois_da_checagem_tambem_da_409(
++    autenticado, db_session, tanque, monkeypatch
++):
++    # simula a corrida: a checagem previa nao ve o MAC e o banco recusa no INSERT (uq_disp_mac)
++    monkeypatch.setattr(cadastro, "_checar_mac", lambda *args, **kwargs: None)
++    antes = _total(db_session, Tanque)
++    dispositivo = _dados_dispositivo(mac_address="a4:f0:0f:64:3c:70")
++    resposta = autenticado.post("/tanques", json=_dados_tanque(tanque, dispositivo=dispositivo))
++
++    assert resposta.status_code == 409
++    assert _erros(resposta) == {("body", "dispositivo", "mac_address"): (MAC_REPETIDO, "conflict")}
++    assert _total(db_session, Tanque) == antes
++
++
++def test_validacao_do_tanque_e_do_dispositivo_em_portugues(autenticado, tanque):
++    amanha = (date.today() + timedelta(days=2)).isoformat()
++    dados = _dados_tanque(
++        tanque,
++        nome="  ",
++        volume_litros=0,
++        quantidade_peixes=-1,
++        data_povoamento=amanha,
++        dispositivo=_dados_dispositivo(nome="", mac_address="xyz", ip_local="999.1.1.1"),
++    )
++    resposta = autenticado.post("/tanques", json=dados)
++
++    assert resposta.status_code == 422
++    assert {campo: msg for campo, (msg, _) in _erros(resposta).items()} == {
++        ("body", "nome"): "Informe o nome do tanque.",
++        ("body", "volume_litros"): "O volume deve ser maior que zero.",
++        ("body", "quantidade_peixes"): "A quantidade não pode ser negativa.",
++        ("body", "data_povoamento"): "A data não pode estar no futuro.",
++        ("body", "dispositivo", "nome"): "Informe o nome do dispositivo.",
++        ("body", "dispositivo", "mac_address"): "Use o formato AA:BB:CC:DD:EE:FF.",
++        ("body", "dispositivo", "ip_local"): "Informe um IP válido, como 192.168.0.20.",
++    }
++
++
++def test_especie_fora_do_catalogo(autenticado, tanque):
++    resposta = autenticado.post("/tanques", json=_dados_tanque(tanque, id_especie=999999))
++    assert resposta.status_code == 422
++    assert _erros(resposta) == {("body", "id_especie"): ("Selecione uma espécie do catálogo.", "value_error")}
++
++
++def test_edita_tanque(autenticado, tanque):
++    dados = _dados_tanque(tanque, nome="Tanque bancada", quantidade_peixes=12, status="inativo")
++    resposta = autenticado.patch(f"/tanques/{tanque.id}", json=dados)
++
++    assert resposta.status_code == 200
++    corpo = resposta.json()
++    assert (corpo["nome"], corpo["quantidade_peixes"], corpo["status"]) == ("Tanque bancada", 12, "inativo")
++    # o dispositivo continua ligado ao tanque: inativar nao apaga nada (I-08)
++    assert len(corpo["dispositivos"]) == 1
++    assert autenticado.patch("/tanques/999999", json=dados).status_code == 404
++
++
++def test_cria_dispositivo_em_tanque_existente(autenticado, tanque):
++    resposta = autenticado.post("/dispositivos", json=_dados_dispositivo(id_tanque=tanque.id))
++
++    assert resposta.status_code == 201, resposta.text
++    corpo = resposta.json()
++    assert corpo["id_tanque"] == tanque.id and corpo["mac_address"] == MAC_NOVO
++    assert len(corpo["sensores"]) == 3
++    assert len(autenticado.get(f"/tanques/{tanque.id}/dispositivos").json()) == 2
++
++
++def test_criar_dispositivo_valida_tanque_e_mac(autenticado, tanque):
++    resposta = autenticado.post("/dispositivos", json=_dados_dispositivo(id_tanque=999999))
++    assert _erros(resposta) == {("body", "id_tanque"): ("Tanque não encontrado.", "value_error")}
++
++    resposta = autenticado.post(
++        "/dispositivos", json=_dados_dispositivo(id_tanque=tanque.id, mac_address="a4:f0:0f:64:3c:70")
++    )
++    assert resposta.status_code == 409
++    assert _erros(resposta) == {("body", "mac_address"): (MAC_REPETIDO, "conflict")}
++
++
++def test_edita_dispositivo(autenticado, db_session, tanque):
++    id_seed = db_session.scalar(select(Dispositivo.id).where(Dispositivo.id_tanque == tanque.id))
++    novo = autenticado.post("/dispositivos", json=_dados_dispositivo(id_tanque=tanque.id)).json()
++
++    # manter o proprio MAC nao e conflito
++    resposta = autenticado.patch(
++        f"/dispositivos/{id_seed}",
++        json=_dados_dispositivo(nome="No da bancada", mac_address="a4:f0:0f:64:3c:70", modelo_esp32=""),
++    )
++    assert resposta.status_code == 200, resposta.text
++    corpo = resposta.json()
++    assert (corpo["nome"], corpo["modelo_esp32"], corpo["versao_firmware"]) == (
++        "No da bancada", "ESP32 DevKitC V4", "1.2.0",
++    )
++
++    resposta = autenticado.patch(f"/dispositivos/{id_seed}", json=_dados_dispositivo(mac_address=novo["mac_address"]))
++    assert resposta.status_code == 409
++    assert autenticado.patch("/dispositivos/999999", json=_dados_dispositivo()).status_code == 404
++
++
++def test_altera_status_do_sensor(autenticado, db_session, tanque):
++    sensor = db_session.scalar(select(Sensor).where(Sensor.id_tanque == tanque.id).order_by(Sensor.id))
++
++    resposta = autenticado.patch(f"/sensores/{sensor.id}", json={"status": "em_calibracao"})
++    assert resposta.status_code == 200
++    assert resposta.json()["status"] == "em_calibracao"
++    assert resposta.json()["modelo"] in {"SEN0161-V2", "DS18B20", "SEN0189"}
++
++    assert autenticado.patch(f"/sensores/{sensor.id}", json={"status": "quebrado"}).status_code == 422
++    assert autenticado.patch("/sensores/999999", json={"status": "ativo"}).status_code == 404
++
++
++@pytest.mark.parametrize(
++    ("metodo", "caminho"),
++    [
++        ("post", "/tanques"),
++        ("patch", "/tanques/1"),
++        ("post", "/dispositivos"),
++        ("patch", "/dispositivos/1"),
++        ("patch", "/sensores/1"),
++    ],
++)
++def test_cadastro_e_so_para_administrador(cliente, db_session, tanque, metodo, caminho):
++    definir_usuario(db_session, "produtor@teste.local", SENHA, nome="Produtor", perfil="operador")
++    db_session.commit()
++    token = cliente.post("/auth/login", json={"email": "produtor@teste.local", "senha": SENHA}).json()["access_token"]
++
++    resposta = cliente.request(metodo, caminho, json={}, headers={"Authorization": f"Bearer {token}"})
++    assert resposta.status_code == 403
++    assert resposta.json() == {"detail": "Acesso restrito a administradores."}
+diff --git a/backend/tests/api/test_comando_aerador_mqtt.py b/backend/tests/api/test_comando_aerador_mqtt.py
+new file mode 100644
+index 0000000..49fb771
+--- /dev/null
++++ b/backend/tests/api/test_comando_aerador_mqtt.py
+@@ -0,0 +1,59 @@
++"""Publicador de verdade contra o broker de teste (mosquitto-test do docker-compose, porta 1884)."""
++
++import json
++import time
++import uuid
++
++import paho.mqtt.client as mqtt
++
++from src.api.comando_aerador import PublicadorMqtt, topico_aerador
++
++BROKER = ("localhost", 1884)
++
++
++def _esperar(condicao, segundos: float = 5.0) -> bool:
++    limite = time.monotonic() + segundos
++    while time.monotonic() < limite:
++        if condicao():
++            return True
++        time.sleep(0.05)
++    return False
++
++
++def test_topico_usa_o_mac_sem_separador_como_o_firmware():
++    assert topico_aerador("tcc-piscicultura-morgado", "A4:F0:0F:64:3C:70") == (
++        "tcc-piscicultura-morgado/a4f00f643c70/aerador"
++    )
++
++
++def test_comando_fica_retido_para_o_no_que_conectar_depois():
++    prefixo = f"teste-api-{uuid.uuid4().hex[:6]}"
++    publicador = PublicadorMqtt(*BROKER, prefixo)
++    publicador.iniciar()
++    try:
++        assert _esperar(publicador._client.is_connected)
++        assert publicador.publicar_aerador("a4:f0:0f:64:3c:70", "ligar", 42, 1791590400)
++    finally:
++        publicador.parar()
++
++    # o "no" so assina depois da publicacao: recebe o comando porque ele ficou retido
++    recebidas: list[mqtt.MQTTMessage] = []
++    no = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
++    no.on_message = lambda client, userdata, msg: recebidas.append(msg)
++    no.connect(*BROKER)
++    topico = f"{prefixo}/a4f00f643c70/aerador"
++    no.subscribe(topico, qos=1)
++    no.loop_start()
++    try:
++        assert _esperar(lambda: recebidas)
++        assert recebidas[0].retain
++        assert json.loads(recebidas[0].payload) == {"acao": "ligar", "id": 42, "ts": 1791590400}
++    finally:
++        no.publish(topico, b"", qos=1, retain=True).wait_for_publish(5)  # apaga o retido do teste
++        no.loop_stop()
++        no.disconnect()
++
++
++def test_sem_conexao_com_o_broker_nao_publica():
++    publicador = PublicadorMqtt("localhost", 1, "teste")  # nunca iniciado
++    assert publicador.publicar_aerador("a4:f0:0f:64:3c:70", "ligar", 1, 0) is False
+diff --git a/backend/tests/api/test_leituras_e_previsoes.py b/backend/tests/api/test_leituras_e_previsoes.py
+new file mode 100644
+index 0000000..5cff362
+--- /dev/null
++++ b/backend/tests/api/test_leituras_e_previsoes.py
+@@ -0,0 +1,140 @@
++from datetime import datetime, timedelta, timezone
++
++from tests.api.fabricas import MINUTO, agora, gravar_ciclo, gravar_leituras
++
++# blocos de 5 min e de 1 h alinhados, para as contas do teste serem exatas
++BASE = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
++
++
++def _periodo(desde: datetime, ate: datetime, **outros) -> dict:
++    return {"desde": desde.isoformat(), "ate": ate.isoformat(), **outros}
++
++
++def _series(resposta) -> dict[str, dict]:
++    assert resposta.status_code == 200, resposta.text
++    return {s["grandeza"]: s for s in resposta.json()["series"]}
++
++
++def test_leituras_brutas(autenticado, db_session, tanque):
++    for i, ph in enumerate([7.0, 7.1, 7.2]):
++        gravar_leituras(db_session, tanque, BASE + i * MINUTO, ph=ph, temperatura=25.0 + i)
++    gravar_leituras(db_session, tanque, BASE + 2 * timedelta(hours=1), ph=9.9)  # fora do periodo
++    db_session.commit()
++
++    resposta = autenticado.get(
++        f"/tanques/{tanque.id}/leituras",
++        params=_periodo(BASE, BASE + timedelta(hours=1), bucket="raw", grandezas="ph,temperatura"),
++    )
++    series = _series(resposta)
++
++    assert list(series) == ["ph", "temperatura"]
++    assert series["ph"]["unidade"] == "pH" and series["ph"]["estimado"] is False
++    # bruto: sem min/max
++    assert series["ph"]["pontos"] == [
++        {"ts": "2026-10-09T12:00:00Z", "valor": "7.0000"},
++        {"ts": "2026-10-09T12:01:00Z", "valor": "7.1000"},
++        {"ts": "2026-10-09T12:02:00Z", "valor": "7.2000"},
++    ]
++
++
++def test_leituras_agregadas_em_5_min(autenticado, db_session, tanque):
++    for i, ph in enumerate([7.0, 7.2, 7.4, 7.6, 7.8, 8.0]):  # 12:00 a 12:05
++        gravar_leituras(db_session, tanque, BASE + i * MINUTO, ph=ph)
++    db_session.commit()
++
++    series = _series(
++        autenticado.get(
++            f"/tanques/{tanque.id}/leituras",
++            params=_periodo(BASE, BASE + timedelta(hours=1), bucket="5m", grandezas="ph"),
++        )
++    )
++
++    assert series["ph"]["pontos"] == [
++        {"ts": "2026-10-09T12:00:00Z", "valor": "7.4000", "min": "7.0000", "max": "7.8000"},
++        {"ts": "2026-10-09T12:05:00Z", "valor": "8.0000", "min": "8.0000", "max": "8.0000"},
++    ]
++
++
++def test_serie_de_od_vem_das_estimativas_do_ml(autenticado, db_session, tanque):
++    for i, od in enumerate([6.0, 5.0, 4.0]):  # um ciclo a cada 5 min
++        gravar_ciclo(db_session, tanque, BASE + 5 * i * MINUTO, od=od)
++    db_session.commit()
++    url = f"/tanques/{tanque.id}/leituras"
++
++    od = _series(autenticado.get(url, params=_periodo(BASE, BASE + timedelta(hours=1), grandezas="od")))["od"]
++    assert od["estimado"] is True and od["unidade"] == "mg/L"
++    assert [p["valor"] for p in od["pontos"]] == ["6.0000", "5.0000", "4.0000"]
++
++    por_hora = _series(
++        autenticado.get(url, params=_periodo(BASE, BASE + timedelta(days=2), bucket="1h", grandezas="od"))
++    )["od"]
++    assert por_hora["pontos"] == [{"ts": "2026-10-09T12:00:00Z", "valor": "5.0000", "min": "4.0000", "max": "6.0000"}]
++
++
++def test_todas_as_grandezas_por_padrao(autenticado, tanque):
++    series = _series(
++        autenticado.get(f"/tanques/{tanque.id}/leituras", params=_periodo(BASE, BASE + timedelta(hours=1)))
++    )
++    assert list(series) == ["ph", "temperatura", "turbidez", "od"]
++    assert all(s["pontos"] == [] for s in series.values())
++
++
++def test_validacao_do_periodo(autenticado, tanque):
++    url = f"/tanques/{tanque.id}/leituras"
++    casos = [
++        (_periodo(BASE, BASE), "desde"),
++        (_periodo(BASE, BASE + timedelta(days=30), bucket="raw"), "bucket"),
++        (_periodo(BASE, BASE + timedelta(hours=1), grandezas="ph,amonia"), "grandezas"),
++    ]
++    for parametros, campo in casos:
++        resposta = autenticado.get(url, params=parametros)
++        assert resposta.status_code == 422, parametros
++        assert resposta.json()["detail"][0]["loc"] == ["query", campo]
++
++    assert autenticado.get(url, params={"desde": BASE.isoformat()}).status_code == 422
++    assert autenticado.get("/tanques/999999/leituras", params=_periodo(BASE, BASE + MINUTO)).status_code == 404
++
++
++def test_previsao_atual(autenticado, db_session, tanque):
++    t = agora()
++    gravar_leituras(db_session, tanque, t - MINUTO, ph=7.5, temperatura=26.0)
++    gravar_ciclo(db_session, tanque, t - 10 * MINUTO, od=6.5)  # ciclo anterior
++    gravar_ciclo(db_session, tanque, t - 5 * MINUTO, od=4.2, nivel_od="atencao", confianca_od=0.82)
++    db_session.commit()
++
++    corpo = autenticado.get(f"/tanques/{tanque.id}/previsoes/atual").json()
++
++    assert corpo["nivel_risco"] == "atencao"
++    assert corpo["gerada_em"] == (t - 5 * MINUTO).isoformat().replace("+00:00", "Z")
++    assert corpo["od_atual"] == {
++        "valor": "4.2000", "nivel_risco": "atencao", "confianca": "0.8200", "baixa_confianca": False,
++    }
++    assert [(h["horizonte_h"], h["nivel_risco"], h["parametro_critico"]) for h in corpo["horizontes"]] == [
++        (1, "otimo", "ph"), (2, "atencao", "ph"), (3, "critico", "ph"),
++    ]
++    assert corpo["horizontes"][0]["confianca"] == "0.9000"
++    assert corpo["horizontes"][0]["baixa_confianca"] is False
++
++
++def test_previsao_indeterminada_quando_o_ml_nao_gravou(autenticado, tanque):
++    corpo = autenticado.get(f"/tanques/{tanque.id}/previsoes/atual").json()
++    assert corpo == {"id_tanque": tanque.id, "nivel_risco": None, "gerada_em": None, "od_atual": None, "horizontes": []}
++
++
++def test_previsao_desatualizada_mantem_a_hora_do_ultimo_ciclo(autenticado, db_session, tanque):
++    gerada = agora() - 20 * MINUTO
++    gravar_ciclo(db_session, tanque, gerada)
++    db_session.commit()
++
++    corpo = autenticado.get(f"/tanques/{tanque.id}/previsoes/atual").json()
++    assert corpo["nivel_risco"] is None and corpo["od_atual"] is None and corpo["horizontes"] == []
++    assert corpo["gerada_em"] == gerada.isoformat().replace("+00:00", "Z")
++
++
++def test_previsao_de_tanque_fora_de_operacao_nao_tem_data(autenticado, db_session, tanque):
++    gravar_ciclo(db_session, tanque, agora() - MINUTO)
++    tanque.status = "inativo"
++    db_session.commit()
++
++    corpo = autenticado.get(f"/tanques/{tanque.id}/previsoes/atual").json()
++    assert corpo["gerada_em"] is None and corpo["nivel_risco"] is None
+diff --git a/backend/tests/api/test_seguranca_e_faixas.py b/backend/tests/api/test_seguranca_e_faixas.py
+new file mode 100644
+index 0000000..645f4e2
+--- /dev/null
++++ b/backend/tests/api/test_seguranca_e_faixas.py
+@@ -0,0 +1,63 @@
++from datetime import timedelta
++
++import pytest
++
++from src.api import faixas
++from src.api.seguranca import ACESSO, RENOVACAO, emitir_token, gerar_hash_senha, ler_token, verificar_senha
++from src.db.models import Especie
++
++SEGREDO = "s" * 48
++TILAPIA = Especie(ph_min=6.5, ph_max=8.5, temp_min=20.0, temp_max=30.0, od_min=4.0, od_max=8.0)
++
++
++def test_hash_de_senha_confere_so_com_a_senha_certa():
++    senha_hash = gerar_hash_senha("correta-123")
++    assert senha_hash.startswith("scrypt$")
++    assert verificar_senha("correta-123", senha_hash)
++    assert not verificar_senha("errada-123", senha_hash)
++    assert gerar_hash_senha("correta-123") != senha_hash  # sal aleatorio
++
++
++def test_hash_fora_do_formato_nunca_confere():
++    # o seed grava um texto fixo no lugar do hash: esse usuario ainda nao tem senha
++    assert not verificar_senha("sem-autenticacao-neste-sub-projeto", "sem-autenticacao-neste-sub-projeto")
++
++
++def test_token_so_vale_para_o_proprio_tipo_e_dentro_da_validade():
++    acesso, _ = emitir_token(7, ACESSO, timedelta(minutes=5), SEGREDO)
++    assert ler_token(acesso, ACESSO, SEGREDO)["sub"] == "7"
++    assert ler_token(acesso, RENOVACAO, SEGREDO) is None
++    assert ler_token(acesso, ACESSO, "o" * 48) is None
++
++    expirado, _ = emitir_token(7, ACESSO, timedelta(seconds=-1), SEGREDO)
++    assert ler_token(expirado, ACESSO, SEGREDO) is None
++
++
++@pytest.mark.parametrize(
++    ("valor", "grandeza", "esperado"),
++    [
++        # tilapia: pH 6,5-8,5 (margem 0,2) e temperatura 20-30 (margem 1,0), como no ml/src/faixas.py
++        (7.5, "ph", "otimo"),
++        (6.7, "ph", "otimo"),
++        (6.6, "ph", "atencao"),
++        (8.4, "ph", "atencao"),
++        (6.4, "ph", "critico"),
++        (8.6, "ph", "critico"),
++        (25.0, "temperatura", "otimo"),
++        (20.5, "temperatura", "atencao"),
++        (31.0, "temperatura", "critico"),
++    ],
++)
++def test_nivel_segue_a_regra_de_faixas_do_ml(valor, grandeza, esperado):
++    assert faixas.nivel(valor, grandeza, TILAPIA) == esperado
++
++
++def test_od_nao_e_classificado_pela_api():
++    with pytest.raises(ValueError):
++        faixas.nivel(5.0, "od", TILAPIA)
++
++
++def test_pior_nivel():
++    assert faixas.pior("otimo", "critico", "atencao") == "critico"
++    assert faixas.pior("otimo", "atencao") == "atencao"
++    assert faixas.pior("otimo") == "otimo"
+diff --git a/backend/tests/api/test_tanques.py b/backend/tests/api/test_tanques.py
+new file mode 100644
+index 0000000..586a68d
+--- /dev/null
++++ b/backend/tests/api/test_tanques.py
+@@ -0,0 +1,128 @@
++from src.db.models import Tanque
++from tests.api.fabricas import MINUTO, agora, gravar_ciclo, gravar_leituras
++
++
++def _tanque(cliente, tanque: Tanque) -> dict:
++    resposta = cliente.get(f"/tanques/{tanque.id}")
++    assert resposta.status_code == 200
++    return resposta.json()
++
++
++def _leituras(corpo: dict) -> dict[str, dict]:
++    return {leitura["grandeza"]: leitura for leitura in corpo["ultimas_leituras"]}
++
++
++def test_tanque_sem_dados(autenticado, tanque):
++    corpo = _tanque(autenticado, tanque)
++
++    assert corpo["nome"] == "Tanque bancada TCC"
++    assert corpo["especie"]["nome_cientifico"] == "Oreochromis niloticus"
++    assert corpo["especie"]["ph_min"] == "6.50"
++    assert corpo["nivel_risco"] is None
++    assert corpo["ultima_leitura_em"] is None
++    assert corpo["ultimas_leituras"] == []
++    assert [(d["nome"], d["status_conexao"]) for d in corpo["dispositivos"]] == [("No sensor bancada", "offline")]
++
++
++def test_ultima_leitura_por_grandeza_e_od_estimado_do_ml(autenticado, db_session, tanque):
++    t = agora()
++    gravar_leituras(db_session, tanque, t - 10 * MINUTO, ph=7.0, temperatura=25.0, turbidez=30.0)
++    # sensor de turbidez em falha: o no publica null e a ingestao nao grava
++    gravar_leituras(db_session, tanque, t - MINUTO, ph=7.2, temperatura=26.0)
++    gravar_ciclo(db_session, tanque, t - 2 * MINUTO, od=5.6, nivel_od="otimo", confianca_od=0.46)
++    db_session.commit()
++
++    corpo = _tanque(autenticado, tanque)
++    leituras = _leituras(corpo)
++
++    assert leituras["ph"]["valor"] == "7.2000"
++    assert leituras["turbidez"]["valor"] == "30.0000"
++    assert leituras["turbidez"]["ts"] < leituras["ph"]["ts"]
++    assert leituras["temperatura"]["unidade"] == "C"
++    assert leituras["od"] == {
++        "grandeza": "od", "valor": "5.6000", "unidade": "mg/L", "ts": leituras["od"]["ts"],
++        "estimado": True, "baixa_confianca": True,
++    }
++    assert corpo["dispositivos"][0]["status_conexao"] == "online"
++    assert corpo["ultima_leitura_em"] == corpo["dispositivos"][0]["ultima_leitura_em"]
++
++
++def test_nivel_atual_e_o_pior_entre_ph_temperatura_e_od(autenticado, db_session, tanque):
++    t = agora()
++    # pH 8,4: dentro da faixa, mas na margem de 10% -> atencao; OD otimo
++    gravar_leituras(db_session, tanque, t - MINUTO, ph=8.4, temperatura=26.0)
++    gravar_ciclo(db_session, tanque, t - MINUTO, nivel_od="otimo")
++    db_session.commit()
++    assert _tanque(autenticado, tanque)["nivel_risco"] == "atencao"
++
++    gravar_ciclo(db_session, tanque, t, od=2.8, nivel_od="critico")
++    db_session.commit()
++    assert _tanque(autenticado, tanque)["nivel_risco"] == "critico"
++
++
++def test_sem_previsao_recente_nao_ha_nivel_atual(autenticado, db_session, tanque):
++    t = agora()
++    gravar_leituras(db_session, tanque, t - MINUTO, ph=7.5, temperatura=26.0)
++    gravar_ciclo(db_session, tanque, t - 16 * MINUTO)
++    db_session.commit()
++
++    corpo = _tanque(autenticado, tanque)
++    assert corpo["nivel_risco"] is None
++    # a ultima estimativa de OD continua visivel, com o ts dela, para o painel dizer ha quanto tempo
++    assert _leituras(corpo)["od"]["estimado"] is True
++
++
++def test_tanque_fora_de_operacao_nao_tem_nivel(autenticado, db_session, tanque):
++    t = agora()
++    gravar_leituras(db_session, tanque, t - MINUTO, ph=7.5, temperatura=26.0)
++    gravar_ciclo(db_session, tanque, t - MINUTO)
++    tanque.status = "manutencao"
++    db_session.commit()
++
++    assert _tanque(autenticado, tanque)["nivel_risco"] is None
++
++
++def test_no_sem_leitura_ha_mais_de_5_min_fica_offline(autenticado, db_session, tanque):
++    gravar_leituras(db_session, tanque, agora() - 6 * MINUTO, ph=7.5, temperatura=26.0, turbidez=10.0)
++    db_session.commit()
++    assert _tanque(autenticado, tanque)["dispositivos"][0]["status_conexao"] == "offline"
++
++
++def test_lista_de_tanques(autenticado, tanque):
++    resposta = autenticado.get("/tanques")
++    assert resposta.status_code == 200
++    assert [t["id"] for t in resposta.json()] == [tanque.id]
++
++
++def test_tanque_inexistente(autenticado):
++    resposta = autenticado.get("/tanques/999999")
++    assert resposta.status_code == 404
++    assert resposta.json() == {"detail": "Tanque não encontrado."}
++
++
++def test_dispositivos_do_tanque_com_sensores(autenticado, db_session, tanque):
++    gravar_leituras(db_session, tanque, agora() - MINUTO, ph=7.5)
++    db_session.commit()
++
++    resposta = autenticado.get(f"/tanques/{tanque.id}/dispositivos")
++    assert resposta.status_code == 200
++    [dispositivo] = resposta.json()
++    assert dispositivo["mac_address"] == "a4:f0:0f:64:3c:70"
++    assert dispositivo["status_conexao"] == "online"
++    assert dispositivo["ip_local"] is None
++    assert sorted(s["grandeza"] for s in dispositivo["sensores"]) == ["ph", "temperatura", "turbidez"]
++    assert {s["status"] for s in dispositivo["sensores"]} == {"ativo"}
++
++
++def test_especies(autenticado, tanque):
++    [especie] = autenticado.get("/especies").json()
++    assert especie["nome_comum"] == "Tilapia do Nilo"
++    assert especie["od_min"] == "4.00"
++
++
++def test_alertas_vem_vazios_ate_o_sub_projeto_4(autenticado):
++    assert autenticado.get("/alertas", params={"ativos": "true"}).json() == {
++        "itens": [], "total": 0, "pagina": 1, "por_pagina": 10,
++    }
++    assert autenticado.get("/alertas", params={"por_pagina": 51}).status_code == 422
++

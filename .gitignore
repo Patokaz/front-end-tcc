@@ -1,0 +1,15 @@
+# Dependências e artefatos de build
+node_modules/
+dist/
+coverage/
+
+# Variáveis de ambiente locais (os .env.* do front só têm flags públicas VITE_*)
+.env
+*.local
+
+# Configuração local de ferramentas
+frontend/.claude/
+
+# Documentos acadêmicos do grupo (Word): ficam fora do repositório de código
+*.docx
+~$*
