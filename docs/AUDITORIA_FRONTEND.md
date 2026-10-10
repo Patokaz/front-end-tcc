@@ -640,7 +640,7 @@ Base de consulta indicada pelo usuário. São inspiração, não especificação
 - **Medição automática nas 11 telas e 7 larguras** (320, 375, 390, 430, 768, 1024, 1440 px): sem rolagem horizontal e sem texto cortado. Nas larguras de celular, com toque emulado, nenhum alvo abaixo de 44 px.
 - **Limites da verificação:** em 768 e 1024 px o navegador de teste emula mouse, então a regra de toque não foi medida nessas larguras. Tudo foi feito com viewport simulado, não em aparelho real.
 - **Telas conferidas:** claro e escuro, cores dos gráficos resolvidas pelo tema, troca de tema em Ajustes, navegação por teclado com foco visível.
-- **Checagens:** `tsc`, ESLint, 29 testes e build de produção sem erros. JS inicial com 62 KB comprimidos, dentro do orçamento de 200 KB do TC2.
+- **Checagens:** `tsc`, ESLint, 29 testes e build de produção sem erros. O módulo de entrada tem 62 kB comprimidos. Somando os quatro módulos que o `index.html` pré-carrega, a abertura baixa cerca de 135 kB de JavaScript comprimido, dentro do orçamento de 200 kB do TC2. *(Corrigido em 10/10: a primeira versão desta linha citava só os 62 kB do módulo de entrada.)*
 
 ### 15.6 Pendências
 

@@ -27,6 +27,7 @@ flowchart LR
 | [`frontend/`](frontend/README.md) | O painel (React + Vite + TypeScript): como rodar, scripts, estrutura e regras do código |
 | [`docs/AUDITORIA_FRONTEND.md`](docs/AUDITORIA_FRONTEND.md) | Auditoria inicial e registro de todas as decisões: fontes, inconsistências, arquitetura, entregas da API e modernização visual (§15) |
 | [`docs/CONTRATO_API.md`](docs/CONTRATO_API.md) | Contrato da API que o painel consome, com a origem de cada campo no banco |
+| [`docs/TEXTOS_TCC_PAINEL_API.md`](docs/TEXTOS_TCC_PAINEL_API.md) | Textos prontos para atualizar o TCC com o painel, a API e o PWA, seção por seção, com as linhas da Declaração de IA |
 | [`api-backend/`](api-backend/LEIA-ME.md) | API FastAPI e patch do firmware (aerador), prontos para os repositórios do backend e do firmware |
 | `home page tcc.png`, `fluxo de telas - wireframe tcc.png`, `componentes.png` | Telas do Figma "Painel Aquícola", referência de estrutura e navegação |
 
