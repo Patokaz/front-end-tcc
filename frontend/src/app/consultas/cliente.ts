@@ -1,6 +1,10 @@
 import { useSyncExternalStore } from 'react'
-import { QueryCache, QueryClient } from '@tanstack/react-query'
+import { QueryCache, QueryClient, type Query } from '@tanstack/react-query'
+import type { Tanque } from '@/dominio/entidades'
 import { ErroApi, type TipoErro } from '@/infra/api/erros'
+import { sessao } from '@/infra/api/sessao'
+import { salvarUltimaLeitura } from '@/infra/armazenamento/ultimaLeitura'
+import { chaves } from './chaves'
 
 /**
  * Enquanto o WebSocket (Socket.IO) não existe no backend, os dados "ao vivo" são
@@ -38,9 +42,17 @@ const ERROS_SEM_NOVA_TENTATIVA: TipoErro[] = [
   'resposta_invalida',
 ]
 
+/** Cada lista de tanques recebida vira a "última leitura" que o painel mostra quando abre sem rede. */
+function aoReceber(dados: unknown, consulta: Query<unknown, unknown, unknown>) {
+  registrarAtualizacao()
+  const ehListaDeTanques = consulta.queryKey.length === 1 && consulta.queryKey[0] === chaves.tanques[0]
+  // sem token, a resposta chegou depois do "Sair" e não deve ser guardada
+  if (ehListaDeTanques && sessao.token()) void salvarUltimaLeitura(dados as Tanque[])
+}
+
 export function criarClienteQuery() {
   return new QueryClient({
-    queryCache: new QueryCache({ onSuccess: registrarAtualizacao }),
+    queryCache: new QueryCache({ onSuccess: aoReceber }),
     defaultOptions: {
       queries: {
         staleTime: 20_000,

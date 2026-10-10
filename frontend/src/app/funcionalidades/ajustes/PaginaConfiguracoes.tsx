@@ -14,6 +14,7 @@ import { CabecalhoCartao, Cartao } from '@/ui/Cartao'
 import { Aviso } from '@/ui/Estados'
 import { SeletorSegmentado } from '@/ui/Navegacao'
 import { useToast } from '@/ui/Toast'
+import { CartaoAplicativo } from '../../componentes/Aplicativo'
 import { aplicarErrosDaApi } from '../../componentes/formularios'
 import { usePreferencias } from '../../preferencias'
 import { aplicarTema, trocarTemaComTransicao } from '../../tema'
@@ -164,6 +165,8 @@ export default function PaginaConfiguracoes() {
         />
         <p className="text-xs text-tinta-suave">As preferências ficam salvas neste aparelho.</p>
       </Cartao>
+
+      <CartaoAplicativo />
 
       {!explicacaoOdDispensada && (
         <section aria-labelledby="titulo-od" className="relative rounded-xl border border-primaria/20 bg-primaria-fundo p-4 pr-14">

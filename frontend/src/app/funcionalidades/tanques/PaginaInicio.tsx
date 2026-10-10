@@ -11,6 +11,7 @@ import { SeletorSegmentado } from '@/ui/Navegacao'
 import { CartaoIndicador } from '@/ui/Pecas'
 import { SeloRisco } from '@/ui/Selos'
 import { AvisoWhatsApp, CartaoAlerta, ItemEventoFeed } from '../../componentes/Alertas'
+import { ConviteInstalacao } from '../../componentes/Aplicativo'
 import { GraficoQualidade } from '../../componentes/Graficos'
 import { CartaoTanque, ItemTanque } from '../../componentes/Tanque'
 import { useAlertasAtivos, useEventos } from '../../consultas/monitoramento'
@@ -113,6 +114,7 @@ export default function PaginaInicio() {
   return (
     <div className="space-y-6">
       {cabecalho}
+      <ConviteInstalacao />
 
       <section aria-label="Resumo por situação" className="grid grid-cols-3 gap-2 sm:gap-4">
         <CartaoIndicador tom="otimo" icone={CheckCircle2} rotulo="Ótimo" valor={contagem.otimo} detalhe={deTotal} />

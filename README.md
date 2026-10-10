@@ -46,7 +46,7 @@ Abra http://localhost:5173. Por padrão o painel usa um **servidor simulado (MSW
 
 ## Tecnologias
 
-React 18 · Vite · TypeScript (strict) · Tailwind CSS 4 · React Router 7 · TanStack Query 5 · React Hook Form + Zod · Recharts · MSW · Vitest + Testing Library.
+React 18 · Vite · TypeScript (strict) · Tailwind CSS 4 · React Router 7 · TanStack Query 5 · React Hook Form + Zod · Recharts · vite-plugin-pwa (Workbox) · MSW · Vitest + Testing Library.
 
 A identidade visual segue o TC2 §8 (paleta, fonte Public Sans e escala tipográfica), com a estrutura de telas do Figma, tema claro e escuro e alvos de toque de 44 px.
 
@@ -55,11 +55,11 @@ A identidade visual segue o TC2 §8 (paleta, fonte Public Sans e escala tipográ
 - **Pronto:**
   - as telas do painel (início, tanques, histórico, relatórios, previsão, alertas, eventos, cadastro e ajustes), funcionando com dados simulados;
   - a API, com testes automatizados, entregue em `api-backend/`;
-  - a interface no sistema visual do TC2, com tema escuro.
+  - a interface no sistema visual do TC2, com tema escuro;
+  - o PWA: instalável e, sem internet, mostra a última leitura salva no aparelho.
 - **Pendente:**
   - alertas (orquestração N8N, sub-projeto 4): com a API real, as telas de alertas e eventos ficam vazias até lá;
   - tempo real por WebSocket: por enquanto o painel atualiza a cada 30 s;
-  - instalação como aplicativo (PWA);
   - o patch do firmware do aerador ainda precisa ser compilado e testado na placa;
   - conferir a interface em aparelhos reais.
 

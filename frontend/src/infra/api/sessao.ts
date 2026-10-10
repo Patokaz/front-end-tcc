@@ -6,10 +6,16 @@ import { montarUrl, TEMPO_LIMITE_MS } from './url'
  * A renovação usa o cookie HttpOnly emitido pela API, que o front-end não consegue ler.
  */
 let tokenAcesso: string | null = null
-let renovacaoEmAndamento: Promise<boolean> | null = null
+let renovacaoEmAndamento: Promise<ResultadoRenovacao> | null = null
 const ouvintesExpiracao = new Set<() => void>()
 
-async function pedirRenovacao(): Promise<boolean> {
+/**
+ * "sem_sessao": o servidor recusou o cookie (401/403), é preciso entrar de novo.
+ * "sem_conexao": rede, tempo esgotado ou servidor fora do ar — a sessão pode continuar válida.
+ */
+export type ResultadoRenovacao = 'renovada' | 'sem_sessao' | 'sem_conexao'
+
+async function pedirRenovacao(): Promise<ResultadoRenovacao> {
   try {
     const resposta = await fetch(montarUrl('/auth/refresh'), {
       method: 'POST',
@@ -17,13 +23,14 @@ async function pedirRenovacao(): Promise<boolean> {
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(TEMPO_LIMITE_MS),
     })
-    if (!resposta.ok) return false
+    if (resposta.status === 401 || resposta.status === 403) return 'sem_sessao'
+    if (!resposta.ok) return 'sem_conexao'
     const dados = respostaToken.safeParse(await resposta.json())
-    if (!dados.success) return false
+    if (!dados.success) return 'sem_sessao'
     tokenAcesso = dados.data.access_token
-    return true
+    return 'renovada'
   } catch {
-    return false
+    return 'sem_conexao'
   }
 }
 
@@ -35,7 +42,12 @@ export const sessao = {
   },
 
   /** Requisições concorrentes que recebem 401 aguardam a mesma renovação. */
-  renovar(): Promise<boolean> {
+  async renovar(): Promise<boolean> {
+    return (await sessao.restaurar()) === 'renovada'
+  },
+
+  /** Como `renovar`, mas diz por que falhou: ao abrir o app sem rede, o painel mostra a última leitura salva. */
+  restaurar(): Promise<ResultadoRenovacao> {
     renovacaoEmAndamento ??= pedirRenovacao().finally(() => {
       renovacaoEmAndamento = null
     })

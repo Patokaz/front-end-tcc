@@ -53,9 +53,26 @@ painelAquicola.restaurarDadosSimulados()
 
 Em produção, sirva o `dist/` e a API no mesmo domínio por um proxy reverso (Nginx/Traefik), com `/api` apontando para o FastAPI.
 
+## PWA (instalação e uso sem internet)
+
+O build de produção (`npm run build`, sem dados simulados) é um PWA. Com ele:
+
+- o painel é **instalável** pelo navegador. A partir da 2ª visita aparece um convite no Início; o cartão "Aplicativo" em Configurações também instala;
+- o **service worker** guarda o app no aparelho e as respostas recentes da API, conforme o TC2 §9;
+- a **última leitura** de cada tanque fica salva no aparelho (IndexedDB). Aberto sem internet, ou com o servidor fora do ar, o painel mostra esses valores com o horário da medição e o aviso de que podem estar desatualizados. Quando a conexão volta, ele entra sozinho;
+- ao **sair da conta**, a cópia local e as respostas guardadas são apagadas.
+
+O PWA não roda em `npm run dev` nem no `build:demo`, porque o servidor simulado (MSW) usa outro service worker no mesmo endereço.
+
+Para testar localmente:
+1. suba a API, como em "Usar a API real";
+2. rode `npm run build`;
+3. crie `.env.production.local` com `API_PROXY_ALVO=http://127.0.0.1:8000` e rode `npm run preview`;
+4. abra http://localhost:4173. Em produção, o PWA exige HTTPS.
+
 ## Tecnologias
 
-React 18 · Vite · TypeScript (strict) · TailwindCSS 4 · React Router 7 · TanStack Query 5 · React Hook Form + Zod · Recharts · lucide-react · Public Sans (servida localmente) · MSW (dados simulados e testes) · Vitest + Testing Library.
+React 18 · Vite · TypeScript (strict) · TailwindCSS 4 · React Router 7 · TanStack Query 5 · React Hook Form + Zod · Recharts · lucide-react · Public Sans (servida localmente) · vite-plugin-pwa (Workbox) + idb-keyval (PWA) · MSW (dados simulados e testes) · Vitest + Testing Library.
 
 ### Sistema visual
 
@@ -95,7 +112,7 @@ Regras que orientam o código:
 ## Limitações conhecidas
 
 - **Tempo real:** sem WebSocket no backend, os dados são atualizados a cada 30 s (contingência prevista no TC2). A troca por Socket.IO fica isolada na camada de consultas.
-- **PWA (instalação e modo offline):** previsto para a etapa seguinte.
+- **Cadastros sem internet:** não ficam em fila para envio posterior (Background Sync do TC2 §9). O token fica só em memória (RNF05), então um reenvio feito depois pelo service worker chegaria sem autorização. Além disso, o UC01 precisa responder na hora quando o MAC é repetido.
 - **Navegadores embutidos sem suporte a Service Worker** (ex.: painel de pré-visualização do Claude Desktop): o servidor simulado passa sozinho para um modo de compatibilidade. O console mostra o aviso do registro recusado, que não ocorre no Chrome, Edge ou Firefox.
 - **Alertas e eventos:** o sub-projeto 4 (N8N) ainda não existe no backend; com a API real essas telas ficam vazias até lá.
 - **Aerador:** o painel mostra o **último comando enviado**, não o estado real do relé: o nó ainda não confirma. O comando só chega ao relé com o firmware v3 (`../api-backend/firmware-aerador.patch`).

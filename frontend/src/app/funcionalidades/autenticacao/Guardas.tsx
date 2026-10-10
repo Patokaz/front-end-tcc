@@ -5,6 +5,7 @@ import { useTituloDocumento } from '@/compartilhado/hooks'
 import { BotaoLink } from '@/ui/Botao'
 import { Carregando, EstadoVazio } from '@/ui/Estados'
 import { useAutenticacao, useUsuario } from './ProvedorAutenticacao'
+import { TelaSemConexao } from './TelaSemConexao'
 
 export function TelaCarregamento() {
   return (
@@ -18,6 +19,7 @@ export function RotaProtegida({ children }: { children: ReactNode }) {
   const { estado } = useAutenticacao()
   const local = useLocation()
   if (estado.status === 'verificando') return <TelaCarregamento />
+  if (estado.status === 'sem_conexao') return <TelaSemConexao />
   if (estado.status === 'anonimo') {
     return <Navigate to="/entrar" replace state={{ destino: `${local.pathname}${local.search}` }} />
   }

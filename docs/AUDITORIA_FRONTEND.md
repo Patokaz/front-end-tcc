@@ -646,3 +646,64 @@ Base de consulta indicada pelo usuário. São inspiração, não especificação
 
 - Conferir as cores em aparelhos reais, sob sol e no escuro.
 - Os 40 px do TC2 para valores de leitura foram adaptados (ver 15.3). Se a banca exigir literalmente, dá para aplicar no detalhe do tanque.
+
+## 16. PWA: instalação e abertura sem internet (10/10/2026)
+
+Pedido do usuário: implementar o PWA antes de documentar o TCC (RNF06: "Dashboard responsivo (PWA)"). Base: TC2 de arquitetura do front-end, §9, e o plano da §9 desta auditoria (etapa 6: manifesto, service worker, aviso offline, última leitura salva).
+
+### 16.1 O que foi feito
+
+| Item do TC2 §9 | Implementação |
+|---|---|
+| Manifesto: `standalone`, orientação livre, ícones 192, 512 e *maskable*, cor `agua` | `vite-plugin-pwa` gera `manifest.webmanifest`. Ícones PNG em `public/icones/`, derivados de `icone.svg`, mais o `apple-touch-icon` para iPhone e iPad |
+| App shell em precache, com revisão por hash | Workbox (`generateSW`): HTML, JS, CSS, fonte Public Sans e ícones; 48 arquivos, cerca de 1 MB. O `mockServiceWorker.js` fica de fora |
+| `GET /especies`, `/tipos-sensor`: *stale-while-revalidate*, 7 dias | Cache `api-catalogos` |
+| `GET /tanques`: rede primeiro, cópia de até 5 min | Cache `api-tanques` (lista e detalhe) |
+| `GET .../leituras`: rede primeiro, sem persistência longa | Cache `api-leituras`, 5 min, até 30 respostas |
+| `POST`/`PATCH`: só rede | Sem rota no service worker: vão sempre à rede |
+| Última leitura por tanque no IndexedDB (`idb-keyval`) | `infra/armazenamento/ultimaLeitura.ts`: cada lista de tanques recebida vira a cópia local |
+| Abertura sem rede com horário e aviso de desatualizado | Tela "Última leitura salva" (`autenticacao/TelaSemConexao.tsx`), com horário da cópia, "Medido há X" em cada tanque e o nível como "na última leitura" |
+| `beforeinstallprompt` oferecido em momento oportuno, não na primeira visita | Convite no Início a partir da 2ª abertura, até ser dispensado; cartão "Aplicativo" em Ajustes. No iPhone e no iPad, que não têm o evento, aparecem os passos de "Adicionar à Tela de Início" |
+| Versão nova do app | Aviso "Há uma nova versão" com "Atualizar" e "Depois": recarregar sozinho poderia apagar um cadastro pela metade. Checagem de versão a cada 1 h |
+
+### 16.2 Decisões e desvios
+
+- **Background Sync dos cadastros (TC2 §9) não foi implementado.**
+  - O token fica só em memória (RNF05, TC2 §10), então um envio reexecutado depois pelo service worker chegaria sem autorização.
+  - O UC01 exige resposta na hora para MAC repetido e campos inválidos.
+  - Sem rede, o cadastro mostra a mensagem de conexão e o usuário tenta de novo. Se a equipe quiser a fila, é uma mudança de fluxo do UC01 a decidir antes.
+- **Service worker só no build sem dados simulados.** O MSW usa um service worker no mesmo escopo. Em `npm run dev` e no `build:demo` não há PWA, e o convite de instalação não aparece.
+- **Servidor fora do ar na abertura.** Antes, o app ia para o login, que também falharia. Agora mostra a mesma tela da abertura sem internet, com o título "Não foi possível falar com o servidor", e tenta de novo a cada 30 s e quando a rede volta.
+  - Só um 401 ou 403 na renovação leva ao login.
+- **Privacidade no aparelho.** A cópia local e os caches `api-*` são apagados:
+  - ao sair;
+  - quando a sessão expira;
+  - quando a renovação é recusada (401).
+  Assim outra pessoa no mesmo aparelho não vê os tanques da conta anterior.
+- **Dependências:**
+  - `vite-plugin-pwa` 1.3.0, de desenvolvimento. A 2.0.0 saiu em 03/10/2026; preferi a versão anterior, estável;
+  - `idb-keyval` 6.3.0, com cerca de 1 KB. As duas estão listadas no TC2.
+
+### 16.3 Verificação
+
+- **Automática:** `tsc`, ESLint, 33 testes (4 novos) e build sem erros.
+  - Os testes novos cobrem a gravação da cópia, a abertura sem rede com e sem cópia, a nova tentativa que entra quando o servidor volta e a limpeza da cópia após 401.
+  - O IndexedDB é simulado em memória no jsdom.
+- **Chrome headless (154, perfil limpo), com o build de produção e a API real local** (TimescaleDB no Docker e dados de teste):
+  - manifesto e instalabilidade sem erros (`Page.getAppManifest` e `Page.getInstallabilityErrors`);
+  - o service worker ativa e controla a página;
+  - os caches `api-tanques` e `api-leituras` são criados;
+  - a cópia de 3 tanques é salva após o login;
+  - com o servidor parado e a rede emulada como offline, o app abre do precache e mostra "Última leitura salva", sem rolagem horizontal em 390 px;
+  - quando a rede volta, entra sozinho, sem pedir login;
+  - o convite aparece na 2ª visita e some com "Agora não";
+  - ao sair, a cópia e os caches da API são apagados.
+- **Limites:**
+  - não foi testado em celular real nem no Safari do iPhone;
+  - a instalação em si (aceitar o pedido do navegador) não foi feita, só conferidos os critérios e o evento;
+  - o perfil de teste do Chrome precisou de um caminho curto: no caminho longo da pasta temporária, o Cache Storage falha no Windows.
+
+### 16.4 Pendências
+
+- Testar a instalação e a abertura sem internet num Android e num iPhone reais.
+- Em produção, o PWA exige HTTPS. O proxy reverso da arquitetura-alvo (Nginx ou Traefik com TLS) atende.

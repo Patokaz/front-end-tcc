@@ -3,11 +3,14 @@ import { createRoot } from 'react-dom/client'
 import '@fontsource-variable/public-sans'
 import './index.css'
 import { App } from './app/App'
+import { iniciarInstalacao } from './app/instalacao'
 import { aplicarTema } from './app/tema'
 import { lerPreferencias } from './infra/armazenamento/preferencias'
 
 // antes do primeiro desenho, para não piscar o tema errado
 aplicarTema(lerPreferencias().tema)
+// o navegador pode oferecer a instalação antes de qualquer tela montar
+iniciarInstalacao()
 
 /**
  * Com VITE_USAR_MOCKS=true, o servidor simulado (MSW) responde às chamadas de /api/v1

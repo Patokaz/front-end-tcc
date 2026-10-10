@@ -14,7 +14,7 @@ import { itemAtivo, MENU_INFERIOR, MENU_LATERAL, type ItemNavegacao } from './na
 
 const DADOS_SIMULADOS = import.meta.env.VITE_USAR_MOCKS === 'true'
 
-function Marca({ claro }: { claro?: boolean }) {
+export function Marca({ claro }: { claro?: boolean }) {
   return (
     <Link to="/" className="flex items-center gap-3 rounded-lg">
       <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primaria-solida text-white">
