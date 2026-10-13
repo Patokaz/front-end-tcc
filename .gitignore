@@ -10,6 +10,7 @@ coverage/
 # Configuração local de ferramentas
 frontend/.claude/
 
-# Documentos acadêmicos do grupo (Word): ficam fora do repositório de código
+# Documentos acadêmicos do grupo (Word e PDF): ficam fora do repositório de código
 *.docx
 ~$*
+entrega-final/

@@ -19,18 +19,18 @@ A API usa o modelo `Previsao` da **Tarefa 1 do ML**, que no repositório recebid
 
 ## Aplicar
 
-Da raiz do `sistema-tcc-completo`, escolha **um** dos dois:
+Clone este repositório (`front-end-tcc`) na mesma pasta do `sistema-tcc-completo`. Da raiz do `sistema-tcc-completo`, escolha **um** dos dois:
 
 ```powershell
 # repositório ainda sem a API
-git apply --check "C:\Users\Raphael\Desktop\frontend tcc\api-backend\api-minima.patch"
-git apply "C:\Users\Raphael\Desktop\frontend tcc\api-backend\api-minima.patch"
+git apply --check ../front-end-tcc/api-backend/api-minima.patch
+git apply ../front-end-tcc/api-backend/api-minima.patch
 ```
 
 ```powershell
 # já aplicou a 1ª entrega
-git apply --check "C:\Users\Raphael\Desktop\frontend tcc\api-backend\uc01-cadastro.patch"
-git apply "C:\Users\Raphael\Desktop\frontend tcc\api-backend\uc01-cadastro.patch"
+git apply --check ../front-end-tcc/api-backend/uc01-cadastro.patch
+git apply ../front-end-tcc/api-backend/uc01-cadastro.patch
 ```
 
 Sem git: copie a pasta `arquivos\backend` por cima da pasta `backend` do repositório. `requirements.txt` e `.env.example` são substituídos inteiros; se tiverem mudado desde 09/10, junte as linhas à mão.
